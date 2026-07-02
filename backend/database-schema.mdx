@@ -1,5 +1,5 @@
 ---
-title: "VOZI Database Schema: Tables and Relationships"
+title: "VOZI Supabase Database Schema: Tables and RLS Policies"
 sidebarTitle: "Database Schema"
 description: "Reference for all 5 Supabase tables in VOZI — adults, children, sound_progress, practice_attempts, and premium — with columns, types, and RLS policies."
 ---
@@ -39,7 +39,7 @@ The `adults` table is a 1:1 mirror of Supabase's built-in `auth.users` table. It
 
 ### `children`
 
-Each row represents one child profile linked to an adult. The `name` field stores an alias or nickname — it is explicitly **not** a real name.
+Each row represents one child profile linked to an adult. The `name` field stores an alias or nickname — it is explicitly **not** a real name. This table has no `updated_at` or `deleted_at` columns; the sync merge rule accounts for this (see [Sync & Auth](/backend/sync-and-auth)).
 
 | Column | Type | Nullable | Description |
 |---|---|---|---|

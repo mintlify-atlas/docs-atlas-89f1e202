@@ -1,5 +1,5 @@
 ---
-title: "Premium Mode and Developer Mode in VOZI"
+title: "VOZI Premium Mode and Developer Toggle: Access Control"
 sidebarTitle: "Premium"
 description: "How VOZI's Premium demo works — the free phoneme gate, local persistence, Supabase account sync, and the developer mode toggle for testing."
 ---
@@ -55,6 +55,7 @@ bool canAccess(Phoneme phoneme) =>
 | `load()` | `Future<void>` | Reads local value, starts observing auth changes |
 | `activateDemo()` | `Future<PremiumWriteOutcome>` | Enables Premium |
 | `deactivateDemo()` | `Future<PremiumWriteOutcome>` | Disables Premium |
+| `refreshFromAccount()` | `Future<void>` | Reads remote `premium` row and reconciles with local state |
 | `canAccess(Phoneme)` | `bool` | Gate check combining Premium status and free phoneme rule |
 | `isFreePhoneme(Phoneme)` | `bool` | `true` only for R |
 
@@ -147,12 +148,18 @@ class DeveloperStore extends ChangeNotifier {
   static const String _kEnabled = 'vozi_developer_mode_enabled_v1';
 
   bool _isEnabled = false;
+  bool _loaded = false;
 
+  /// `true` when the persisted value has been read from `shared_preferences`.
+  bool get isLoaded => _loaded;
+
+  /// `true` if developer mode is active (all content unlocked for demo).
   bool get isEnabled => _isEnabled;
 
   Future<void> load() async {
     final prefs = await SharedPreferences.getInstance();
     _isEnabled = prefs.getBool(_kEnabled) ?? false;
+    _loaded = true;
     notifyListeners();
   }
 

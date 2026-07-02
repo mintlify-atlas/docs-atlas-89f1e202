@@ -58,6 +58,7 @@ The `ChildProfile` model fields are:
 | `practicedPhonemes` | `Set<String>` | Phoneme codes attempted at least once |
 | `updatedAt` | `DateTime` | Last local modification timestamp (UTC) |
 | `isDirty` | `bool` | Whether there are unsynced local changes |
+| `deletedAt` | `DateTime?` | Tombstone timestamp; non-null means the profile is soft-deleted (hidden in UI, pending Supabase propagation) |
 
 ### Available Avatars
 

@@ -1,7 +1,7 @@
 ---
-title: "VOZI Architecture: Flutter App Structure and State Management"
+title: "VOZI Architecture: App Structure and State Management"
 sidebarTitle: "Overview"
-description: "How VOZI is structured — the InheritedWidget scope tree, ChangeNotifier stores, named routes, and the local-first data strategy with optional Supabase sync."
+description: "How VOZI is structured — the scope tree, ChangeNotifier stores, named routes, and the local-first data strategy with optional Supabase sync."
 ---
 
 VOZI is a Flutter Material app built around a **local-first, no-login-for-children** philosophy. All child data lives on-device in `shared_preferences` and is available instantly without a network connection. The adult can optionally sign in with Supabase to sync profiles and Premium status across devices, but the app works completely offline without any credentials. State is managed with plain `ChangeNotifier` stores injected into the widget tree via `InheritedNotifier` scopes — no external state management package required.

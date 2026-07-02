@@ -1,7 +1,7 @@
 ---
-title: "Audio Services: TTS, STT, and Asset Audio in VOZI"
+title: "VOZI Audio: TTS, STT, and Asset Playback in Flutter"
 sidebarTitle: "Audio Services"
-description: "How VOZI handles text-to-speech, on-device speech recognition, and MP3 asset playback — the three audio services that power the Listen and Speak exercise flow."
+description: "How VOZI handles TTS, on-device speech recognition, and MP3 asset playback — the three audio services powering the Listen and Speak exercise flow."
 ---
 
 Every exercise in VOZI involves three distinct audio operations: playing a model pronunciation of the target word, listening to the child's attempt through the microphone, and playing a feedback sound after evaluation. These are handled by three separate services — `TtsService`, `AudioAssetService`, and `SttService` — each with a narrow responsibility. `ExerciseScreen` coordinates them, ensuring that only one audio operation is active at any moment and that the microphone is never blocked by a playback player.

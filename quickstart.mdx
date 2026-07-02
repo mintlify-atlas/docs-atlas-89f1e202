@@ -1,5 +1,5 @@
 ---
-title: "Get Started with VOZI on Android"
+title: "Get Started with VOZI: Android Setup and First Run"
 sidebarTitle: "Quickstart"
 description: "Clone VOZI, configure Supabase, and run the app on a physical Android device in minutes. Covers environment setup, SQL migrations, and first launch."
 ---
@@ -111,7 +111,7 @@ This guide is for developers who want to build, run, or contribute to VOZI. By t
     1. **Create a child profile** — on the Profiles screen, tap the add button and enter a name. The profile is saved locally to `shared_preferences`.
     2. **Enter the practice path** — select the profile to reach the child home screen, then start the learning path. The first phoneme available is **R**.
     3. **Try Escuchar (Listen)** — tap the Listen button on any word card. The app plays the MP3 from `assets/audio/words/` or falls back to TTS if the file is not present.
-    4. **Try Hablar (Speak)** — tap the Speak button. The microphone activates and the on-device recognizer transcribes your utterance. A similarity score ≥ 90% registers as correct.
+    4. **Try Hablar (Speak)** — tap the Speak button. The microphone activates and the on-device recognizer transcribes your utterance. A word is marked correct when the exact token appears in the transcription, the target phoneme sound is preserved, and the edit-distance similarity score is ≥ 80%.
     5. **Access the adult panel** — look for the parent/settings entry point and enter PIN **`1234`** to reach the adult dashboard, where you can review progress and access the Premium demo.
   </Step>
 

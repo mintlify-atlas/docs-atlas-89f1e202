@@ -1,7 +1,7 @@
 ---
 title: "VOZI Data Models: Profiles, Phonemes, Words, and Attempts"
 sidebarTitle: "Data Models"
-description: "Reference for all core Dart data models in VOZI — ChildProfile, Phoneme, PracticeWord, SpeechAttempt, WordResult, and their serialization for local storage and Supabase sync."
+description: "Reference for VOZI's core Dart models — ChildProfile, Phoneme, PracticeWord, SpeechAttempt, and Reward, with fields, serialization, and local-storage keys."
 ---
 
 All data in VOZI starts on-device. `shared_preferences` is the primary store — profiles, phoneme progress, attempt history, and settings are serialized as JSON and written locally on every mutation. Supabase sync is an optional overlay: the adult can push local data to the cloud from the parent dashboard, but the app never blocks on a network call and is fully usable without any backend connection.

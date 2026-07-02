@@ -1,5 +1,5 @@
 ---
-title: "Cloud Sync and Adult Authentication in VOZI"
+title: "Cloud Sync and Adult Account Authentication in VOZI"
 sidebarTitle: "Sync & Auth"
 description: "How VOZI syncs child profiles and progress to Supabase with a pull-first local-first strategy, and how adults authenticate with email and password."
 ---
@@ -95,7 +95,7 @@ final remoteProgress = await client
     .select('child_id, sound_code, is_completed, attempts_count');
 ```
 
-After fetching, `SyncService` groups the progress rows by `child_id` and calls `ProfileStore.applyRemoteChild()` for each remote child. The merge rule is conservative: **a local child with `isDirty = true` wins over the remote version**. If the child does not exist locally at all, it is created from the remote data. `pulled` is incremented for each profile that was created or updated.
+After fetching, `SyncService` groups the progress rows by `child_id` and calls `ProfileStore.applyRemoteChild()` for each remote child. The `children` table has no `updated_at` or `deleted_at` columns, so the merge rule is conservative: **a local child with `isDirty = true` wins over the remote version**. If the child does not exist locally at all, it is created from the remote data. `pulled` is incremented for each profile that was created or updated.
 
 If the `children` pull fails, the sync does not attempt to merge `sound_progress` either (there are no local IDs to match against). The error is recorded and the push phase still runs.
 
@@ -128,7 +128,19 @@ After the push phase, `_store.purgeSyncedTombstones()` is called to clean up del
 
 ---
 
-## SyncOutcome Enum
+## `SyncResult` and `SyncOutcome`
+
+`SyncService.sync()` always returns a `SyncResult`. The fields are:
+
+| Field | Type | Description |
+|---|---|---|
+| `outcome` | `SyncOutcome` | One of six enum values describing the overall result (see table below). |
+| `message` | `String` | A user-friendly message suitable for display in the UI. Never contains credentials or raw DB errors. |
+| `pushed` | `int` | Number of local records successfully written to Supabase. Defaults to `0`. |
+| `pulled` | `int` | Number of remote profiles applied to the local store. Defaults to `0`. |
+| `debugDetail` | `String?` | Technical detail for debug logging only. `null` when there are no errors. Never shown to the user. |
+| `ok` | `bool` | Getter. `true` only when `outcome == SyncOutcome.success`. |
+| `recovered` | `bool` | Getter. `true` when `outcome` is `success` or `partial` — use this to decide whether to update a "last synced" timestamp. |
 
 `SyncResult.outcome` is one of six values that the UI maps to a user-facing message and icon:
 
@@ -141,7 +153,59 @@ After the push phase, `_store.purgeSyncedTombstones()` is called to clean up del
 | `offline` | A `SocketException` or network error was detected. Data is safe locally. |
 | `error` | A non-network error occurred and the pull also failed. Data is safe locally. |
 
-`SyncResult.ok` is `true` only for `success`. `SyncResult.recovered` is `true` for both `success` and `partial` — use `recovered` to decide whether to update the "last synced" timestamp in the UI.
+---
+
+## DTO Mapping (`SyncDtos`)
+
+`SyncDtos` is a stateless utility class that converts local model objects into the exact column maps expected by each Supabase table. It has three static methods:
+
+**`SyncDtos.childRow(ChildProfile c, String adultId)`**
+
+Returns a `Map<String, dynamic>` for an upsert into the `children` table. The `adult_id` is injected from the authenticated session — it is not stored in the local model. Because the `children` table has no `updated_at` column, the local `updatedAt` timestamp is written to `created_at` as a sync watermark.
+
+```dart
+static Map<String, dynamic> childRow(ChildProfile c, String adultId) => {
+  'id': c.id,
+  'adult_id': adultId,
+  'name': c.name,
+  'age': c.ageBand.code,       // '4-5' | '6-7'
+  'avatar': c.avatar.key,      // stable key, e.g. 'fox'
+  'total_points': c.points,
+  'created_at': c.updatedAt.toUtc().toIso8601String(),
+};
+```
+
+**`SyncDtos.soundProgressRows(ChildProfile c, List<SpeechAttempt> attempts)`**
+
+Returns a `List<Map<String, dynamic>>` for upserting into `sound_progress` — one row for every sound that has either been practiced or completed. Metrics are aggregated from the child's local attempts: `attempts_count`, `correct_count`, and `best_score` are derived from `attempts`; `is_completed` comes from `c.completedPhonemes`. The conflict target is the natural key `(child_id, sound_code)`.
+
+```dart
+static List<Map<String, dynamic>> soundProgressRows(
+  ChildProfile c,
+  List<SpeechAttempt> attempts,
+) {
+  // Unions sounds-with-attempts and completed sounds.
+  // Each row: child_id, sound_code, attempts_count, correct_count,
+  //           best_score, is_completed, updated_at
+}
+```
+
+**`SyncDtos.practiceAttemptRow(SpeechAttempt a)`**
+
+Returns a `Map<String, dynamic>` for an append-only upsert into `practice_attempts`. Only safe metrics are included. `recognizedText`, audio, and raw transcription are explicitly excluded and have no column in the remote table.
+
+```dart
+static Map<String, dynamic> practiceAttemptRow(SpeechAttempt a) => {
+  'id': a.id,
+  'child_id': a.childProfileId,
+  'sound_code': a.phonemeCode,
+  'target_word': a.targetWord,
+  'score': a.score.clamp(0.0, 1.0).toDouble(),
+  'was_correct': a.wasCorrect,
+  'created_at': a.createdAt.toUtc().toIso8601String(),
+  // NEVER: recognizedText / raw transcription / audio.
+};
+```
 
 ---
 
@@ -156,7 +220,7 @@ After the push phase, `_store.purgeSyncedTombstones()` is called to clean up del
 | Child profiles | ✅ | Name (alias), age band, avatar key, total points |
 | Sound progress | ✅ | Attempts count, correct count, best score, completion status |
 | Practice attempts | ✅ (metrics only) | Phoneme code, target word, score (0–1), pass/fail flag — no audio, no transcript |
-| Premium status | ✅ | Stored in the `premium` table, synced on sign-in and on toggle |
+| Premium status | ✅ | Stored in the `premium` table; synced separately by `PremiumStore` (not `SyncService`) |
 | Audio recordings | ❌ | Processed on-device only; never stored or transmitted |
 | Speech transcripts | ❌ | Discarded after scoring; never stored or transmitted |
 

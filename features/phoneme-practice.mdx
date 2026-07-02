@@ -15,7 +15,7 @@ The exercise screen is laid out as a single vertical column with five distinct z
     A colored `LinearProgressIndicator` at the top showing `(index + 1) / 10`. Below it, a small label reads "Palabra N de 10". The bar color is the phoneme's identity color from `VoziTheme.phonemeColor()`.
   </Card>
   <Card title="Word Card" icon="image">
-    A large rounded white card (`_WordCard`) showing the word's image from `assets/words/<word>.png` and the word in 42sp bold text below it. If the image asset doesn't exist, a placeholder icon is shown without crashing.
+    A large rounded white card (`_WordCard`) showing the word's image from `assets/words/word_<normalized>.png` (resolved via `PracticeWord.imageKey`) and the word in 42sp bold text below it. If the image asset doesn't exist, a placeholder icon is shown without crashing.
   </Card>
   <Card title="Feedback Banner" icon="comment">
     A `_FeedbackBanner` widget that displays contextual messages (see Speak Mode section). Its height is reserved at 54dp so the layout doesn't jump between states.
@@ -36,7 +36,7 @@ Tapping **Escuchar** calls `_listen()`, which:
     Calls `_stt.cancel()` and `_tts.stop()` to free the microphone before playing audio.
   </Step>
   <Step title="Play the MP3 asset">
-    Calls `_audio.playWord(word.audioKey)` which attempts to play the file at `assets/audio/words/<word>.mp3` — the same audio files used by VOZI iOS.
+    Calls `_audio.playWord(word.audioKey)` which attempts to play the file at `assets/audio/words/<normalized>.mp3` (e.g., `ratón` → `raton.mp3`) — the same audio files used by VOZI iOS.
   </Step>
   <Step title="TTS fallback">
     If the MP3 asset does not exist (returns `false`), `_tts.speak(word.text)` is called as a fallback using the device's system text-to-speech engine in Spanish.
@@ -184,4 +184,4 @@ The word bank is a static `Map<String, List<String>>` in `WordBank._words`. Each
 | `BR` | brazo, brisa, brocha, brasa, bravo, brillo, broma, cebra, libro, cabra |
 | `BL` | blanco, blíster, bloque, blando, cable, tabla, pueblo, mueble, habla, establo |
 
-Each word is wrapped in a `PracticeWord` object when loaded. The image asset path is `assets/words/<word>.png` and the audio path is `assets/audio/words/<word>.mp3`.
+Each word is wrapped in a `PracticeWord` object when loaded. The image asset path is `assets/words/word_<normalized>.png` (the `imageKey` property strips diacritics, lowercases, and prepends `word_` — e.g., `ratón` → `word_raton.png`). The audio asset path is `assets/audio/words/<normalized>.mp3` with no prefix (e.g., `ratón` → `raton.mp3`).

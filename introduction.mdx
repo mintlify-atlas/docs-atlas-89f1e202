@@ -30,9 +30,9 @@ When a child selects a phoneme, each of its 10 words is presented as an image ca
 
 **Listen (Escuchar):** The app plays the correct pronunciation of the word using the device's Text-to-Speech engine (`flutter_tts`) or a pre-recorded MP3 from `assets/audio/words/`. The child can tap Listen as many times as needed before attempting to speak.
 
-**Speak (Hablar):** The app activates the on-device speech recognizer (`speech_to_text`). The microphone listens, transcribes the child's utterance locally, and compares it to the target word using a similarity score. A score of **90% or above** counts as a correct attempt. No audio recording is retained after evaluation — only the resulting pass/fail metric.
+**Speak (Hablar):** The app activates the on-device speech recognizer (`speech_to_text`). The microphone listens, transcribes the child's utterance locally, and evaluates it against three criteria: the target word must appear as a complete token, the phoneme sound must be preserved, and the edit-distance similarity must be **0.8 (80%) or above**. A word that passes all three checks counts as correct. No audio recording is retained after evaluation — only the resulting pass/fail metric.
 
-When a child passes all 10 words in a phoneme, VOZI plays a session-complete audio cue from `assets/audio/feedback/session/` and displays a confetti celebration driven by an animated Rive character from `assets/rive/`. The child receives a reward that appears in their personal rewards gallery.
+When a child completes all 10 words in a phoneme, the next phoneme on the path is unlocked. If the child answered at least 9 out of 10 words correctly (≥ 90% session accuracy), VOZI also plays a session-complete audio cue from `assets/audio/feedback/session/` and displays a confetti celebration driven by an animated Rive character from `assets/rive/`. The child receives a reward that appears in their personal rewards gallery.
 
 <Note>
   VOZI is an **educational** app, not a medical or clinical tool. It is designed to build phoneme awareness through positive reinforcement and is not a substitute for evaluation or therapy by a licensed speech-language pathologist.
@@ -44,7 +44,7 @@ VOZI enforces a strict local-processing rule for all voice data. The speech reco
 
 - **Phoneme practiced** (e.g., `"RR"`)
 - **Word practiced** (e.g., `"perro"`)
-- **Similarity score** (numeric, 0–100)
+- **Similarity score** (numeric, 0.0–1.0)
 - **Pass / fail result**
 - **Timestamp and child profile ID**
 
