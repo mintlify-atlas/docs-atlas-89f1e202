@@ -1,0 +1,260 @@
+---
+title: "VOZI Data Models: Profiles, Phonemes, Words, and Attempts"
+sidebarTitle: "Data Models"
+description: "Reference for all core Dart data models in VOZI — ChildProfile, Phoneme, PracticeWord, SpeechAttempt, WordResult, and their serialization for local storage and Supabase sync."
+---
+
+All data in VOZI starts on-device. `shared_preferences` is the primary store — profiles, phoneme progress, attempt history, and settings are serialized as JSON and written locally on every mutation. Supabase sync is an optional overlay: the adult can push local data to the cloud from the parent dashboard, but the app never blocks on a network call and is fully usable without any backend connection.
+
+<Note>
+  `recognizedText` from `SpeechAttempt` is stored locally and shown in the adult dashboard, but it is **never uploaded to Supabase**. The remote `practice_attempts` table has no transcript column. Only anonymized metrics (`phoneme_code`, `target_word`, `was_correct`, `score`) are synced.
+</Note>
+
+---
+
+## Phoneme Enum
+
+The `Phoneme` enum declares all nine phonemes/groups that VOZI teaches, in path order. The `code` string is the stable identifier used everywhere — in `shared_preferences` keys, Supabase columns, word bank lookups, and UI labels.
+
+| Enum value | `code` | `order` (index) | `displayName` |
+|-----------|--------|-----------------|---------------|
+| `Phoneme.r` | `R` | 0 | R |
+| `Phoneme.rr` | `RR` | 1 | RR |
+| `Phoneme.s` | `S` | 2 | S |
+| `Phoneme.l` | `L` | 3 | L |
+| `Phoneme.tr` | `TR` | 4 | TR |
+| `Phoneme.pr` | `PR` | 5 | PR |
+| `Phoneme.pl` | `PL` | 6 | PL |
+| `Phoneme.br` | `BR` | 7 | BR |
+| `Phoneme.bl` | `BL` | 8 | BL |
+
+`displayName` is identical to `code` — the phoneme code is the label shown to both children and adults. `order` is simply the enum's declaration index, which defines the learning path sequence.
+
+```dart
+enum Phoneme {
+  r('R'), rr('RR'), s('S'), l('L'),
+  tr('TR'), pr('PR'), pl('PL'), br('BR'), bl('BL');
+
+  const Phoneme(this.code);
+  final String code;
+
+  String get displayName => code;
+  int get order => index;
+
+  static Phoneme fromCode(String code) =>
+      values.firstWhere((p) => p.code == code);
+}
+```
+
+Use `Phoneme.fromCode('RR')` to reconstruct a phoneme from a stored string. This is the canonical way to go from a `shared_preferences` or Supabase value back to the enum.
+
+---
+
+## ChildProfile
+
+`ChildProfile` is the central data object — one per child managed by an adult. It intentionally stores **no personally identifiable information**: the `name` field is an alias or nickname, not a real name, and no birth date is stored.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `String` (UUID) | Stable primary key; UUID-compatible with Supabase |
+| `name` | `String` | Child's alias or nickname — not a legal name |
+| `ageBand` | `AgeBand` | `young` (4–5) or `older` (6–7) |
+| `avatar` | `AvatarOption` | Selected character from the catalog |
+| `points` | `int` | Cumulative points from completed phonemes |
+| `completedPhonemes` | `Set<String>` | Phoneme codes where the child achieved ≥90% accuracy |
+| `practicedPhonemes` | `Set<String>` | Phoneme codes attempted at least once (unlocks next station) |
+| `updatedAt` | `DateTime` (UTC) | Timestamp of last local edit; used for last-write-wins sync |
+| `isDirty` | `bool` | `true` when there are local changes not yet pushed to Supabase |
+| `deletedAt` | `DateTime?` | Tombstone timestamp; `null` means the profile is active |
+| `isDeleted` | `bool` (getter) | `true` when `deletedAt != null` — profile is hidden from UI |
+
+**Key methods:**
+
+- `markDirty()` — updates `updatedAt` to now (UTC) and sets `isDirty = true`. Called automatically by every mutation in `ProfileStore`.
+- `toJson()` — serializes to a flat `Map<String, dynamic>` for `shared_preferences` storage.
+- `ChildProfile.fromJson(Map)` — reconstructs from stored JSON with safe fallbacks for missing fields (forward-compatible with older app versions).
+
+```dart
+// JSON shape produced by toJson()
+{
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "name": "Coco",
+  "ageBand": "4-5",
+  "avatar": "fox",
+  "points": 20,
+  "completed": ["R"],
+  "practiced": ["R", "RR"],
+  "updatedAt": "2025-01-15T10:30:00.000Z",
+  "isDirty": false,
+  "deletedAt": null
+}
+```
+
+`completedPhonemes` drives the ✓ checkmark and reward unlocking. `practicedPhonemes` is a lower bar — it unlocks the next station in the learning path without requiring 90% accuracy, so children are never blocked from progressing.
+
+---
+
+## AgeBand Enum
+
+```dart
+enum AgeBand {
+  young('4-5', '4 a 5 años'),
+  older('6-7', '6 a 7 años');
+
+  const AgeBand(this.code, this.label);
+  final String code;
+  final String label;
+
+  static AgeBand fromCode(String code) =>
+      values.firstWhere((b) => b.code == code, orElse: () => young);
+}
+```
+
+| Value | `code` | `label` |
+|-------|--------|---------|
+| `AgeBand.young` | `4-5` | 4 a 5 años |
+| `AgeBand.older` | `6-7` | 6 a 7 años |
+
+The age band is informational in the current version — it guides the intended UX pace but does not change which words are presented. `fromCode` falls back to `young` if the stored value is unrecognized, making deserialization safe across app updates.
+
+---
+
+## AvatarOption
+
+`AvatarOption` is a data class, not an enum, to allow the catalog to be extended without changing serialized values. Each avatar has a **stable string key** (what gets persisted), an emoji (displayed in the UI), and a tint color from `VoziTheme`.
+
+| `key` | Emoji | Tint color |
+|-------|-------|-----------|
+| `fox` | 🦊 | `VoziTheme.peach` |
+| `bear` | 🐻 | `VoziTheme.sunshine` |
+| `cat` | 🐱 | `VoziTheme.bubblegum` |
+| `owl` | 🦉 | `VoziTheme.lavender` |
+| `fish` | 🐠 | `VoziTheme.teal` |
+| `star` | ⭐ | `VoziTheme.coral` |
+| `rabbit` | 🐰 | `VoziTheme.sky` |
+| `dog` | 🐶 | `VoziTheme.mint` |
+
+The first six keys (`fox`, `bear`, `cat`, `owl`, `fish`, `star`) are shared with VOZI iOS. `rabbit` and `dog` are Android additions; iOS falls back to `fox` when it encounters an unknown key.
+
+**Static constructors:**
+
+```dart
+// Preferred: resolve from stored value (handles both key and legacy emoji)
+final avatar = AvatarOption.resolve(stored);
+
+// By stable key only
+final avatar = AvatarOption.byKey('bear');
+
+// By emoji (legacy paths only)
+final avatar = AvatarOption.byEmoji('🐻');
+```
+
+`AvatarOption.resolve(String stored)` is the canonical deserializer. It first tries to match the stored value as a key, then as an emoji (for profiles created before the key migration in release 8.14B), and finally falls back to `fox`. This ensures no existing profile ever loses its avatar after an app update.
+
+---
+
+## PracticeWord
+
+`PracticeWord` wraps a single Spanish word that the child is asked to pronounce. All asset references are **derived from the text** at runtime — there is no lookup table.
+
+```dart
+class PracticeWord {
+  const PracticeWord(this.text);
+  final String text;
+
+  String get imageKey => 'word_${_normalize(text)}';
+  String get audioKey => _normalize(text);
+}
+```
+
+The normalization function strips accents, lowercases the string, trims whitespace, and replaces spaces with underscores:
+
+| Input (`text`) | `audioKey` | `imageKey` | Asset paths |
+|----------------|-----------|-----------|-------------|
+| `"ratón"` | `raton` | `word_raton` | `assets/audio/words/raton.mp3` / `assets/words/word_raton.png` |
+| `"sueño"` | `sueno` | `word_sueno` | `assets/audio/words/sueno.mp3` / `assets/words/word_sueno.png` |
+| `"tren"` | `tren` | `word_tren` | `assets/audio/words/tren.mp3` / `assets/words/word_tren.png` |
+
+If `assets/audio/words/<audioKey>.mp3` does not exist in the bundle, `AudioAssetService.playWord()` returns `false` and the exercise screen falls back to `TtsService`. If the image asset is missing, the UI shows a placeholder. Neither case crashes the app.
+
+---
+
+## SpeechAttempt
+
+One `SpeechAttempt` is created for every completed "Speak" interaction — including retries and failed attempts. Records are append-only: once written they are never modified. `ProfileRepository` enforces a FIFO cap of **500 attempts** to prevent unbounded growth in `shared_preferences`.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `String` (UUID) | Stable primary key; shared with the Supabase row if synced |
+| `childProfileId` | `String` (UUID) | Foreign key to the child's profile |
+| `phonemeCode` | `String` | The phoneme being practiced (e.g. `"R"`, `"BL"`) |
+| `targetWord` | `String` | The word the child was asked to say |
+| `recognizedText` | `String` | Text returned by on-device STT — **local only, never synced** |
+| `wasCorrect` | `bool` | Pass/fail verdict from `WordEvaluator` |
+| `score` | `double` | Similarity score 0..1 from Levenshtein comparison |
+| `createdAt` | `DateTime` | UTC timestamp of the attempt |
+| `isDirty` | `bool` | `true` until the attempt has been pushed to Supabase |
+
+```dart
+// JSON shape produced by toJson()
+{
+  "id": "7f3e4b10-0000-4000-a000-000000000001",
+  "childProfileId": "550e8400-e29b-41d4-a716-446655440000",
+  "phonemeCode": "R",
+  "targetWord": "ratón",
+  "recognizedText": "ratón",
+  "wasCorrect": true,
+  "score": 1.0,
+  "createdAt": "2025-01-15T10:32:15.000Z",
+  "isDirty": false
+}
+```
+
+<Note>
+  `recognizedText` is persisted locally and visible in the adult dashboard so parents can see what the STT heard. It is **not** included in the Supabase sync payload — the remote `practice_attempts` table only stores `phoneme_code`, `target_word`, `was_correct`, `score`, `age_band`, and `created_at`.
+</Note>
+
+---
+
+## WordResult
+
+`WordResult` is a lightweight value object returned by `WordEvaluator.evaluate()`. It is never persisted — its `passed` and `score` fields are immediately mapped to a `SpeechAttempt`.
+
+```dart
+class WordResult {
+  const WordResult({required this.passed, required this.score});
+
+  /// true if the word was spoken correctly by all three evaluation rules.
+  final bool passed;
+
+  /// Levenshtein similarity 0..1; supporting metric, not the sole judge.
+  final double score;
+}
+```
+
+The evaluator applies three rules in sequence: (1) the target word appears as an exact token in the transcription, (2) the phoneme sound is preserved in the normalized word, and (3) the similarity score meets the 0.8 threshold. All three must pass for `WordResult.passed` to be `true`.
+
+---
+
+## Local Persistence (ProfileRepository)
+
+`ProfileRepository` is a thin wrapper around `shared_preferences` with four stable storage keys:
+
+| Key | Type | Contents |
+|-----|------|----------|
+| `vozi_profiles_v1` | `String` (JSON) | Full list of `ChildProfile` objects |
+| `vozi_selected_id_v1` | `String` | UUID of the currently active child |
+| `vozi_attempts_v1` | `String` (JSON) | List of up to 500 `SpeechAttempt` objects |
+| `vozi_sync_last_at_v1` | `String` | ISO-8601 timestamp of the last successful Supabase sync |
+
+All reads and writes are `async` but non-blocking for the UI — `ProfileStore` calls `_persist()` and `_persistAttempts()` without `await` in mutation methods, so the UI rebuilds immediately while the disk write happens concurrently.
+
+`ProfileStore` wraps `ProfileRepository` with `ChangeNotifier` for reactive UI. Widgets read data through `ProfileScope.of(context)` and rebuild automatically when the store calls `notifyListeners()`.
+
+```dart
+// Reading from the store in any widget
+final store = ProfileScope.of(context);
+final profile = store.selected;
+final attempts = store.attemptsFor(profile.id);
+final summaries = store.phonemeSummaries(profile.id);
+```

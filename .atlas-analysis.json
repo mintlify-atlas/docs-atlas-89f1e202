@@ -1,0 +1,88 @@
+{
+  "projectType": "saas",
+  "projectName": "VOZI",
+  "projectDescription": "VOZI is an educational Flutter app for children ages 4–7 that teaches Spanish phoneme pronunciation through interactive listening, voice recognition practice, rewards, and an adult supervision panel.",
+  "theme": "almond",
+  "primaryColor": "#FF7373",
+  "lightColor": "#FF9E6B",
+  "darkColor": "#0D224D",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "configuration"
+            ]
+          },
+          {
+            "group": "Core Features",
+            "pages": [
+              "features/child-experience",
+              "features/phoneme-practice",
+              "features/rewards",
+              "features/parent-dashboard"
+            ]
+          },
+          {
+            "group": "Backend & Sync",
+            "pages": [
+              "backend/supabase-setup",
+              "backend/database-schema",
+              "backend/sync-and-auth"
+            ]
+          },
+          {
+            "group": "Architecture",
+            "pages": [
+              "architecture/overview",
+              "architecture/data-models",
+              "architecture/audio-services",
+              "architecture/premium"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "9-phoneme learning path (R, RR, S, L, TR, PR, PL, BR, BL) with 10 words each",
+    "On-device speech-to-text (STT) with Levenshtein-based word evaluation — no audio ever leaves the device",
+    "Text-to-speech (TTS) model audio with real MP3 word recordings as fallback",
+    "Animated Rive character rewards unlocked at ≥90% session accuracy",
+    "PIN-protected adult dashboard with progress tracking, attempt history, and per-phoneme summaries",
+    "Local-first data storage using shared_preferences with optional Supabase cloud sync",
+    "Premium mode (demo) unlocking all phonemes beyond the free 'R' sound",
+    "Multi-child profile management with emoji avatars and age bands (4–5, 6–7)",
+    "Developer mode for demo and testing purposes",
+    "Privacy-first design: zero audio or transcript data ever uploaded"
+  ],
+  "publicApiSurface": [
+    "Phoneme enum (R, RR, S, L, TR, PR, PL, BR, BL) with code, displayName, order",
+    "WordBank.wordsFor(Phoneme) → List<PracticeWord>",
+    "WordBank.countFor(Phoneme) → int",
+    "WordEvaluator.evaluate({phoneme, target, transcription}) → WordResult",
+    "SttService.listen({onResult, onReady, targetWord}) — on-device STT",
+    "SttService.stopAndReport() — manual stop",
+    "SttService.cancel() — discard session",
+    "TtsService.speak(String text)",
+    "TtsService.stop()",
+    "AudioAssetService.playWord(audioKey) → bool",
+    "AudioAssetService.playCorrect() / playIncorrect() / playSessionComplete()",
+    "ProfileStore.load() / finishPhoneme() / recordAttempt() / resetProgress()",
+    "ProfileStore.attemptsFor(childId) → List<SpeechAttempt>",
+    "ProfileStore.phonemeSummaries(childId) → List<PhonemeSummary>",
+    "PremiumStore.activateDemo() / deactivateDemo() → PremiumWriteOutcome",
+    "PremiumStore.canAccess(Phoneme) → bool",
+    "AuthService.signIn({email, password})",
+    "AuthService.signUp({email, password})",
+    "AuthService.signOut()",
+    "SyncService.sync() → SyncResult",
+    "AppRouter routes: /profiles, /create-profile, /home, /parent-gate, /parent, /rewards, /premium, /adult-account",
+    "Supabase tables: adults, children, sound_progress, practice_attempts, premium"
+  ]
+}

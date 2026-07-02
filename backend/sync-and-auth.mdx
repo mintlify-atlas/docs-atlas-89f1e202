@@ -1,0 +1,197 @@
+---
+title: "Cloud Sync and Adult Authentication in VOZI"
+sidebarTitle: "Sync & Auth"
+description: "How VOZI syncs child profiles and progress to Supabase with a pull-first local-first strategy, and how adults authenticate with email and password."
+---
+
+VOZI treats the device as the source of truth. Cloud sync is manual — the adult taps a button to trigger it — and it always runs pull-first: remote data is downloaded and merged before any local changes are pushed. If sync fails at any point, all data remains safe on the device and nothing is lost. Supabase is a convenience layer on top of a fully offline-capable app, not a dependency.
+
+---
+
+## Authentication (`AuthService`)
+
+Authentication in VOZI is adults-only. Children never log in and have no account in Supabase. The `AuthService` class manages the entire auth lifecycle as a `ChangeNotifier`, so any widget that depends on session state rebuilds automatically when the session changes.
+
+`AuthService` initializes by calling `SupabaseClientProvider.client`. If the client is `null` (no `.env` configuration), it sets its status to `signedOut` immediately and every subsequent operation returns a friendly error message without crashing.
+
+### Session State
+
+`AuthService` exposes the following observable properties:
+
+| Property | Type | Description |
+|---|---|---|
+| `status` | `SessionStatus` | Current session state: `unknown`, `signedOut`, or `signedIn`. |
+| `isSignedIn` | `bool` | `true` when `status == SessionStatus.signedIn`. |
+| `email` | `String?` | The signed-in adult's email address, or `null` if not signed in. |
+| `isWorking` | `bool` | `true` while an auth operation is in progress. Use this to disable buttons. |
+| `errorMessage` | `String?` | A user-friendly error string, or `null`. Never contains credentials. |
+| `infoMessage` | `String?` | An informational message (e.g. "Check your email to confirm your account"), or `null`. |
+| `isConfigured` | `bool` | `true` if a Supabase client is available in this installation. |
+
+### Methods
+
+**`signIn({required String email, required String password})`**
+
+Calls `supabase.auth.signInWithPassword`. The email is normalized (trimmed, lowercased) before the call. On success, the Supabase auth state listener fires and `_apply(session)` sets `status` to `signedIn`. On failure, `errorMessage` is set to a translated, friendly string — raw Supabase error messages are never shown directly.
+
+**`signUp({required String email, required String password})`**
+
+Calls `supabase.auth.signUp`. If the Supabase project requires email confirmation, `res.session` will be `null` and `infoMessage` is set to prompt the adult to check their inbox. If confirmation is disabled, the session is returned immediately and the adult is signed in.
+
+**`signOut()`**
+
+Calls `supabase.auth.signOut`. Local data — child profiles, progress, attempts — is **not** affected. Everything that was stored on the device stays there.
+
+**`clearMessages()`**
+
+Clears `errorMessage` and `infoMessage`. Call this when the user switches between sign-in and sign-up mode to avoid stale messages.
+
+### Example Usage
+
+```dart
+// Listen to auth state in a widget
+final auth = AuthScope.of(context); // ChangeNotifier via InheritedWidget
+
+// Sign in
+await auth.signIn(email: emailController.text, password: passwordController.text);
+
+if (auth.isSignedIn) {
+  // Session is active — sync is now available
+} else if (auth.errorMessage != null) {
+  // Show auth.errorMessage to the adult
+} else if (auth.infoMessage != null) {
+  // Show auth.infoMessage (e.g. "Check your email")
+}
+
+// Sign out (local data is untouched)
+await auth.signOut();
+```
+
+<Note>
+  Children never log in. The `SessionStatus` enum and everything in `AuthService` applies exclusively to the adult account. Child profiles live entirely in local storage, and their data is only pushed to Supabase when the adult explicitly initiates a sync while signed in.
+</Note>
+
+---
+
+## Sync Flow (`SyncService`)
+
+`SyncService.sync()` is the single entry point for cloud synchronization. It returns a `SyncResult` that describes what happened in enough detail for both the UI and debug logging.
+
+The sync order is always **pull first, then push**. This ensures that if the adult has used the app on another device and their data is already in Supabase, that data is merged into the local store before local changes are uploaded. A failure in one table does not abort the others — errors are isolated per table, collected into `debugDetail`, and surfaced in the final `SyncResult` without exposing raw database error messages to the user.
+
+### Pull Phase
+
+The pull phase fetches `children` and `sound_progress` from Supabase. RLS limits the response to rows that belong to the signed-in adult, so no explicit `adult_id` filter is needed in the query.
+
+```dart
+// children pulled from Supabase
+final remoteChildren = await client
+    .from('children')
+    .select('id, name, age, avatar, total_points');
+
+// sound_progress pulled for all children
+final remoteProgress = await client
+    .from('sound_progress')
+    .select('child_id, sound_code, is_completed, attempts_count');
+```
+
+After fetching, `SyncService` groups the progress rows by `child_id` and calls `ProfileStore.applyRemoteChild()` for each remote child. The merge rule is conservative: **a local child with `isDirty = true` wins over the remote version**. If the child does not exist locally at all, it is created from the remote data. `pulled` is incremented for each profile that was created or updated.
+
+If the `children` pull fails, the sync does not attempt to merge `sound_progress` either (there are no local IDs to match against). The error is recorded and the push phase still runs.
+
+### Push Phase
+
+The push phase uploads dirty local data in three steps, each independently guarded:
+
+1. **Children** — all local child profiles where `isDirty == true` and `isDeleted == false` are upserted to `children` using `onConflict: 'id'`. Deleted profiles are not pushed; they are only tombstoned locally.
+
+2. **Sound progress** — if the children upsert succeeded, aggregated `sound_progress` rows are built from each dirty child's attempts and upserted using `onConflict: 'child_id,sound_code'`. After a successful push, those children are marked as synced locally.
+
+3. **Practice attempts** — all local attempts where `isDirty == true` are upserted to `practice_attempts` with `onConflict: 'id'` and `ignoreDuplicates: true`. Because the table is append-only, duplicate IDs are silently skipped rather than overwriting existing rows. Successfully pushed attempts are marked as synced.
+
+```dart
+// Push children
+await client.from('children').upsert(childRows, onConflict: 'id');
+
+// Push aggregated sound progress
+await client.from('sound_progress').upsert(spRows, onConflict: 'child_id,sound_code');
+
+// Push practice attempts (append-only, safe to re-push)
+await client.from('practice_attempts').upsert(
+  attemptRows,
+  onConflict: 'id',
+  ignoreDuplicates: true,
+);
+```
+
+After the push phase, `_store.purgeSyncedTombstones()` is called to clean up deleted profiles that have already been removed from the local store.
+
+---
+
+## SyncOutcome Enum
+
+`SyncResult.outcome` is one of six values that the UI maps to a user-facing message and icon:
+
+| Outcome | Meaning |
+|---|---|
+| `success` | Pull and push both completed without errors. |
+| `partial` | Pull succeeded (data was recovered from the cloud) but one or more push steps failed. Local changes are still saved on the device. |
+| `notSignedIn` | No active adult session. The adult must sign in before syncing. |
+| `notConfigured` | No Supabase client in this installation (`.env` is missing or invalid). |
+| `offline` | A `SocketException` or network error was detected. Data is safe locally. |
+| `error` | A non-network error occurred and the pull also failed. Data is safe locally. |
+
+`SyncResult.ok` is `true` only for `success`. `SyncResult.recovered` is `true` for both `success` and `partial` — use `recovered` to decide whether to update the "last synced" timestamp in the UI.
+
+---
+
+## What Is and Isn't Synced
+
+<Note>
+  VOZI never transmits audio recordings or speech transcripts over the network. There is no column in any Supabase table that could hold them. This is a deliberate privacy guarantee enforced at both the schema level and the `SyncDtos` mapping layer.
+</Note>
+
+| Data | Synced? | Notes |
+|---|---|---|
+| Child profiles | ✅ | Name (alias), age band, avatar key, total points |
+| Sound progress | ✅ | Attempts count, correct count, best score, completion status |
+| Practice attempts | ✅ (metrics only) | Phoneme code, target word, score (0–1), pass/fail flag — no audio, no transcript |
+| Premium status | ✅ | Stored in the `premium` table, synced on sign-in and on toggle |
+| Audio recordings | ❌ | Processed on-device only; never stored or transmitted |
+| Speech transcripts | ❌ | Discarded after scoring; never stored or transmitted |
+
+---
+
+## Offline Behavior
+
+`SyncService` detects network failures by inspecting the exception type and message. A `SocketException`, or any error whose string representation contains `socket`, `network`, `failed host`, `clientexception`, or `connection`, is classified as an offline condition:
+
+```dart
+bool _looksOffline(Object e) {
+  if (e is SocketException) return true;
+  final s = e.toString().toLowerCase();
+  return s.contains('socket') ||
+      s.contains('network') ||
+      s.contains('failed host') ||
+      s.contains('clientexception') ||
+      s.contains('connection');
+}
+```
+
+If an offline condition is detected and the pull phase also failed, `sync()` returns `SyncOutcome.offline`. All local data — profiles, progress, attempts — is unaffected. The next sync attempt will pick up where the previous one left off, because dirty flags are only cleared after a confirmed successful write.
+
+---
+
+## Premium Sync
+
+`PremiumStore` has its own lightweight sync path that runs independently of `SyncService`. It connects directly to the `premium` table to read and write the adult's entitlement status.
+
+**On sign-in:** `PremiumStore._observeAccount()` listens to `onAuthStateChange`. When a session becomes active, `refreshFromAccount()` is called automatically. It reads the `is_premium` column from the adult's row in the `premium` table and applies it locally. If no row exists yet, it creates one using the current local value (so a local demo activation is preserved when the adult first links an account).
+
+**On toggle:** `activateDemo()` and `deactivateDemo()` apply the change locally and optimistically, then attempt to upsert the new value to Supabase. If the upsert fails, the local value is kept as a fallback and `PremiumWriteOutcome.accountFailed` is returned — the app continues to work normally.
+
+**Source tracking:** `PremiumStore.source` reports whether the current value came from `localDemo` (no session, or a network error) or `account` (successfully read from or written to Supabase).
+
+<Tip>
+  If you set up VOZI on a new device and want to restore a child's data, sign in to the adult account first and then tap **Sync** from the account screen. The pull phase will download all child profiles and their sound progress before you create any new local profiles, preventing duplicates.
+</Tip>

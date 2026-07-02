@@ -1,0 +1,294 @@
+---
+title: "VOZI Database Schema: Tables and Relationships"
+sidebarTitle: "Database Schema"
+description: "Reference for all 5 Supabase tables in VOZI — adults, children, sound_progress, practice_attempts, and premium — with columns, types, and RLS policies."
+---
+
+The VOZI schema is intentionally minimal. It stores only what is necessary to sync child profiles and phoneme progress across devices, and nothing more. No audio, no speech transcripts, and no recognized text ever leave the device — only aggregated metrics and profile data are persisted remotely. This philosophy is baked into the schema itself: there is no column in any table that could hold an audio payload or a raw transcription string.
+
+## Entity Relationships
+
+The five tables form two ownership chains rooted at the authenticated adult:
+
+```
+adults ──┬──→ children ──┬──→ sound_progress
+         │               └──→ practice_attempts
+         └──→ premium
+```
+
+- `adults` is a 1:1 mirror of `auth.users` (same `id`)
+- `children` belongs to one `adults` row via `adult_id`
+- `sound_progress` and `practice_attempts` both belong to one `children` row via `child_id`
+- `premium` belongs to one `adults` row via `adult_id` (primary key and foreign key share the same column)
+
+---
+
+## Table Reference
+
+### `adults`
+
+The `adults` table is a 1:1 mirror of Supabase's built-in `auth.users` table. It is created automatically when a new user registers via the `on_auth_user_created` trigger — no manual insert is needed.
+
+| Column | Type | Nullable | Description |
+|---|---|---|---|
+| `id` | `uuid` | NOT NULL | Primary key. References `auth.users(id)` — cascades on delete. |
+| `email` | `text` | NULL | The adult's email address, copied from `auth.users` at registration. |
+| `created_at` | `timestamptz` | NOT NULL | Row creation timestamp. Defaults to `now()`. |
+
+---
+
+### `children`
+
+Each row represents one child profile linked to an adult. The `name` field stores an alias or nickname — it is explicitly **not** a real name.
+
+| Column | Type | Nullable | Description |
+|---|---|---|---|
+| `id` | `uuid` | NOT NULL | Primary key. Generated with `gen_random_uuid()`. |
+| `adult_id` | `uuid` | NOT NULL | Foreign key → `adults(id)`. Cascades on delete. |
+| `name` | `text` | NOT NULL | Child's alias (nickname only — not a real name). |
+| `age` | `text` | NOT NULL | Age band: `'4-5'` or `'6-7'`. |
+| `avatar` | `text` | NOT NULL | Avatar key (e.g. `'fox'`). Defaults to `'fox'`. |
+| `total_points` | `integer` | NOT NULL | Accumulated reward points. Defaults to `0`. |
+| `created_at` | `timestamptz` | NOT NULL | Row creation timestamp. Defaults to `now()`. |
+
+**Indexes:**
+- `idx_children_adult` on `(adult_id)` — speeds up the RLS ownership check and the pull query that fetches all children for the authenticated adult.
+
+---
+
+### `sound_progress`
+
+Each row aggregates a child's history with a single phoneme. The combination of `(child_id, sound_code)` is unique — there is exactly one row per child per sound. The `updated_at` column is maintained automatically by the `trg_sound_progress_updated` trigger.
+
+| Column | Type | Nullable | Description |
+|---|---|---|---|
+| `id` | `uuid` | NOT NULL | Primary key. Generated with `gen_random_uuid()`. |
+| `child_id` | `uuid` | NOT NULL | Foreign key → `children(id)`. Cascades on delete. |
+| `sound_code` | `text` | NOT NULL | Phoneme identifier: `R`, `RR`, `S`, `L`, `TR`, `PR`, `PL`, `BR`, or `BL`. |
+| `attempts_count` | `integer` | NOT NULL | Total number of practice attempts for this sound. Defaults to `0`. |
+| `correct_count` | `integer` | NOT NULL | Number of attempts scored as correct. Defaults to `0`. |
+| `best_score` | `numeric` | NOT NULL | Highest single-attempt score, from `0` to `1` (e.g. `0.95` = 95%). Defaults to `0`. |
+| `is_completed` | `boolean` | NOT NULL | Whether the child has completed this sound. Defaults to `false`. |
+| `updated_at` | `timestamptz` | NOT NULL | Last update timestamp. Auto-refreshed by trigger on every `UPDATE`. |
+
+**Constraints:**
+- `UNIQUE (child_id, sound_code)` — enforces one row per child per phoneme. Upserts from the app use this as the conflict target.
+
+**Indexes:**
+- `idx_sound_progress_child` on `(child_id)`.
+
+---
+
+### `practice_attempts`
+
+Each row records the outcome of one individual practice attempt. This table is append-only — there are no update policies in the RLS configuration, only `SELECT` and `INSERT`.
+
+<Warning>
+  `practice_attempts` intentionally has no column for audio data, raw speech output, or recognized text. This is a **privacy requirement**, not an oversight. The app's `SyncDtos.practiceAttemptRow()` method explicitly comments `// NUNCA: recognizedText / raw transcription / audio` to make this guarantee visible in the code. Only safe metrics are stored remotely.
+</Warning>
+
+| Column | Type | Nullable | Description |
+|---|---|---|---|
+| `id` | `uuid` | NOT NULL | Primary key. Assigned by the app (stable across devices). |
+| `child_id` | `uuid` | NOT NULL | Foreign key → `children(id)`. Cascades on delete. |
+| `sound_code` | `text` | NOT NULL | Phoneme practiced (e.g. `R`, `TR`). |
+| `target_word` | `text` | NOT NULL | The word the child was asked to pronounce. |
+| `score` | `numeric` | NOT NULL | Recognition confidence score, `0` to `1`. Defaults to `0`. |
+| `was_correct` | `boolean` | NOT NULL | Whether the attempt was scored as a pass. Defaults to `false`. |
+| `created_at` | `timestamptz` | NOT NULL | When the attempt occurred. |
+
+**Indexes:**
+- `idx_practice_attempts_child` on `(child_id)`.
+
+---
+
+### `premium`
+
+One row per adult, tracking whether the Premium tier is active. Because `adult_id` is both the primary key and the foreign key, there is no separate `id` column. The `updated_at` column is maintained automatically by the `trg_premium_updated` trigger.
+
+| Column | Type | Nullable | Description |
+|---|---|---|---|
+| `adult_id` | `uuid` | NOT NULL | Primary key. Foreign key → `adults(id)`. Cascades on delete. |
+| `is_premium` | `boolean` | NOT NULL | Whether Premium is currently active for this adult. Defaults to `false`. |
+| `updated_at` | `timestamptz` | NOT NULL | Last update timestamp. Auto-refreshed by trigger on every `UPDATE`. |
+
+---
+
+## Row Level Security
+
+RLS is enabled on all five tables. The core rule is simple: **each authenticated adult can only see and modify their own rows**, and rows that belong to their children. No cross-account access is possible, even with a valid JWT.
+
+The policies use a helper function to avoid duplicating the ownership check across multiple tables:
+
+```sql
+-- Helper: does this child belong to the currently signed-in adult?
+create or replace function public.vozi_owns_child(p_child_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1 from public.children c
+    where c.id = p_child_id and c.adult_id = auth.uid()
+  );
+$$;
+```
+
+<Accordion title="adults — RLS policies">
+
+```sql
+alter table public.adults enable row level security;
+
+create policy adults_select on public.adults
+  for select to authenticated using (id = auth.uid());
+
+create policy adults_insert on public.adults
+  for insert to authenticated with check (id = auth.uid());
+
+create policy adults_update on public.adults
+  for update to authenticated using (id = auth.uid()) with check (id = auth.uid());
+```
+
+An adult can only read and write the single row where `id` matches their own `auth.uid()`.
+
+</Accordion>
+
+<Accordion title="children — RLS policies">
+
+```sql
+alter table public.children enable row level security;
+
+create policy children_select on public.children
+  for select to authenticated using (adult_id = auth.uid());
+
+create policy children_insert on public.children
+  for insert to authenticated with check (adult_id = auth.uid());
+
+create policy children_update on public.children
+  for update to authenticated using (adult_id = auth.uid()) with check (adult_id = auth.uid());
+
+create policy children_delete on public.children
+  for delete to authenticated using (adult_id = auth.uid());
+```
+
+All operations are gated by `adult_id = auth.uid()`, so adults can only access their own children.
+
+</Accordion>
+
+<Accordion title="sound_progress — RLS policies">
+
+```sql
+alter table public.sound_progress enable row level security;
+
+create policy sound_progress_select on public.sound_progress
+  for select to authenticated using (public.vozi_owns_child(child_id));
+
+create policy sound_progress_insert on public.sound_progress
+  for insert to authenticated with check (public.vozi_owns_child(child_id));
+
+create policy sound_progress_update on public.sound_progress
+  for update to authenticated
+  using (public.vozi_owns_child(child_id)) with check (public.vozi_owns_child(child_id));
+
+create policy sound_progress_delete on public.sound_progress
+  for delete to authenticated using (public.vozi_owns_child(child_id));
+```
+
+All operations delegate to `vozi_owns_child()` — progress is accessible only if the child belongs to the signed-in adult.
+
+</Accordion>
+
+<Accordion title="practice_attempts — RLS policies">
+
+```sql
+alter table public.practice_attempts enable row level security;
+
+create policy practice_attempts_select on public.practice_attempts
+  for select to authenticated using (public.vozi_owns_child(child_id));
+
+create policy practice_attempts_insert on public.practice_attempts
+  for insert to authenticated with check (public.vozi_owns_child(child_id));
+```
+
+`practice_attempts` is append-only in RLS: there is a `SELECT` and `INSERT` policy but no `UPDATE` or `DELETE`. Once an attempt is written, it is immutable from the client.
+
+</Accordion>
+
+<Accordion title="premium — RLS policies">
+
+```sql
+alter table public.premium enable row level security;
+
+create policy premium_select on public.premium
+  for select to authenticated using (adult_id = auth.uid());
+
+create policy premium_insert on public.premium
+  for insert to authenticated with check (adult_id = auth.uid());
+
+create policy premium_update on public.premium
+  for update to authenticated using (adult_id = auth.uid()) with check (adult_id = auth.uid());
+```
+
+An adult can only read or update their own premium entitlement row.
+
+</Accordion>
+
+---
+
+## Auto-Registration Trigger
+
+When a new adult creates an account, Supabase inserts a row into `auth.users`. The `on_auth_user_created` trigger catches that event and automatically creates the corresponding row in `public.adults`:
+
+```sql
+create or replace function public.vozi_handle_new_user()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  insert into public.adults (id, email)
+  values (new.id, new.email)
+  on conflict (id) do nothing;
+  return new;
+end;
+$$;
+
+create trigger on_auth_user_created
+  after insert on auth.users
+  for each row execute function public.vozi_handle_new_user();
+```
+
+The function runs with `security definer`, which means it executes with the privileges of the function owner (not the calling user), allowing it to insert into `adults` even though RLS is active. The `on conflict (id) do nothing` clause makes repeated calls safe — the trigger is fully idempotent.
+
+---
+
+## `vozi_touch_updated_at` Helper
+
+The `vozi_touch_updated_at()` function keeps `updated_at` accurate on any table that has an `updated_at` column, without requiring the app to send a timestamp on every write:
+
+```sql
+create or replace function public.vozi_touch_updated_at()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$;
+```
+
+It is attached as a `BEFORE UPDATE` trigger on both `sound_progress` and `premium`:
+
+```sql
+create trigger trg_sound_progress_updated
+  before update on public.sound_progress
+  for each row execute function public.vozi_touch_updated_at();
+
+create trigger trg_premium_updated
+  before update on public.premium
+  for each row execute function public.vozi_touch_updated_at();
+```

@@ -1,0 +1,208 @@
+---
+title: "Premium Mode and Developer Mode in VOZI"
+sidebarTitle: "Premium"
+description: "How VOZI's Premium demo works — the free phoneme gate, local persistence, Supabase account sync, and the developer mode toggle for testing."
+---
+
+Premium in VOZI is currently a **demo feature** managed by the adult from the parent dashboard. There is no payment processing, no App Store subscription, and no external billing provider. The adult can activate or deactivate Premium from the parent dashboard at any time. When activated, all nine phonemes and their associated rewards become accessible to every child profile on the device.
+
+<Note>
+  Premium is a demonstration of the paywall architecture, not a live commercial feature. No real payment is collected. The activation toggle exists to let parents and evaluators preview the full app experience.
+</Note>
+
+---
+
+## Free vs Premium Phonemes
+
+Only the **R phoneme** is available without Premium. All eight remaining phonemes are gated behind Premium status.
+
+```dart
+// From PremiumStore
+static const String freePhonemeCode = 'R';
+
+bool isFreePhoneme(Phoneme phoneme) => phoneme.code == freePhonemeCode;
+
+bool canAccess(Phoneme phoneme) =>
+    _isPremiumEnabled || isFreePhoneme(phoneme);
+```
+
+| Phoneme | Free? | Notes |
+|---------|-------|-------|
+| R | ✅ Always free | First station on the learning path |
+| RR | 🔒 Premium | |
+| S | 🔒 Premium | |
+| L | 🔒 Premium | |
+| TR | 🔒 Premium | |
+| PR | 🔒 Premium | |
+| PL | 🔒 Premium | |
+| BR | 🔒 Premium | |
+| BL | 🔒 Premium | |
+
+`canAccess(phoneme)` is the single gating function. It returns `true` for R unconditionally and for all others only when `isPremiumEnabled` is `true`. Developer mode bypasses this check entirely — see [Developer Mode](#developer-mode-developerstore) below.
+
+---
+
+## PremiumStore
+
+`PremiumStore` is a `ChangeNotifier` that holds the Premium state and orchestrates both local persistence and optional Supabase sync. It is constructed in `_VoziAppState` and exposed to the entire widget tree via `PremiumScope`.
+
+| Member | Type | Description |
+|--------|------|-------------|
+| `isPremiumEnabled` | `bool` | Whether Premium is currently active |
+| `isLoaded` | `bool` | `true` once the persisted value has been read from `shared_preferences` |
+| `source` | `PremiumSource` | Where the current state originated |
+| `freePhonemeCode` | `static const String` | `'R'` — the one always-free phoneme |
+| `load()` | `Future<void>` | Reads local value, starts observing auth changes |
+| `activateDemo()` | `Future<PremiumWriteOutcome>` | Enables Premium |
+| `deactivateDemo()` | `Future<PremiumWriteOutcome>` | Disables Premium |
+| `canAccess(Phoneme)` | `bool` | Gate check combining Premium status and free phoneme rule |
+| `isFreePhoneme(Phoneme)` | `bool` | `true` only for R |
+
+```dart
+// Reading from the store in any widget
+final premium = PremiumScope.of(context);
+
+if (premium.canAccess(phoneme)) {
+  // Show the exercise
+} else {
+  // Show the locked station UI
+}
+```
+
+The local persistence key is `vozi_premium_enabled_v1` in `shared_preferences`. The `_v1` suffix is reserved for future format migrations.
+
+---
+
+## PremiumWriteOutcome Enum
+
+Every call to `activateDemo()` or `deactivateDemo()` returns a `PremiumWriteOutcome` so the UI can show an appropriate confirmation message.
+
+| Value | Meaning |
+|-------|---------|
+| `localOnly` | Saved to `shared_preferences` only. No adult session is active. |
+| `syncedToAccount` | Saved locally **and** successfully upserted to the Supabase `premium` table. |
+| `accountFailed` | Saved locally, but the Supabase write failed (network error, permission issue, etc.). The local value is the fallback and Premium functions normally. |
+
+In all three cases, `_isPremiumEnabled` is updated immediately (optimistic local update) and `notifyListeners()` is called before the Supabase round-trip completes. The UI never waits for the network to reflect the change.
+
+---
+
+## Premium Sync with Supabase
+
+When the adult signs in, `PremiumStore` observes the Supabase auth state stream via `_authSub`. On a new or restored session, `refreshFromAccount()` is called automatically:
+
+<Steps>
+  <Step title="Read the remote row">
+    Queries `SELECT is_premium FROM premium WHERE adult_id = <userId>`.
+  </Step>
+  <Step title="Reconcile">
+    If a row exists, the remote value overwrites the local value and is persisted to `shared_preferences`. If no row exists (first login ever), the current local value is upserted to Supabase — preserving any demo activation the adult set before signing in.
+  </Step>
+  <Step title="Update source">
+    `_source` is set to `PremiumSource.account` on success or kept as `PremiumSource.localDemo` on failure.
+  </Step>
+</Steps>
+
+On sign-out, `_source` reverts to `PremiumSource.localDemo` and the last cached value remains in place. The child's experience is uninterrupted.
+
+```dart
+// Called automatically when auth state changes
+void _observeAccount() {
+  final client = SupabaseClientProvider.client;
+  if (client == null) return;
+  _authSub = client.auth.onAuthStateChange.listen((data) {
+    if (data.session != null) {
+      refreshFromAccount();
+    } else {
+      _source = PremiumSource.localDemo;
+      notifyListeners();
+    }
+  });
+}
+```
+
+For `activateDemo()` and `deactivateDemo()`, the flow is always: update local state → notify UI → write to `shared_preferences` → attempt Supabase upsert → return outcome. The UI update happens before the network call.
+
+---
+
+## Child Home Path: Premium-Locked Stations
+
+In `ChildHomeScreen`, the learning path is rendered as a series of stations. Each station corresponds to one phoneme and can be in one of several states. Premium-locked stations show a **gold crown icon** and the label "Premium".
+
+The locked state is driven by the `_Stop.premiumLocked` value in the home screen's internal model. When the child taps a locked station:
+
+1. A message is shown explaining that Premium is needed
+2. The app navigates to `AppRouter.premium` (`/premium`) where the adult can activate the demo
+
+The `PremiumScope.of(context).canAccess(phoneme)` call is the single decision point that determines whether a station renders as accessible, locked, or completed.
+
+---
+
+## Developer Mode (DeveloperStore)
+
+Developer mode is a **separate toggle from Premium**. It is intended for demos and QA — when enabled, all nine phoneme stations appear fully accessible regardless of Premium status or actual child progress.
+
+```dart
+class DeveloperStore extends ChangeNotifier {
+  static const String _kEnabled = 'vozi_developer_mode_enabled_v1';
+
+  bool _isEnabled = false;
+
+  bool get isEnabled => _isEnabled;
+
+  Future<void> load() async {
+    final prefs = await SharedPreferences.getInstance();
+    _isEnabled = prefs.getBool(_kEnabled) ?? false;
+    notifyListeners();
+  }
+
+  Future<void> setEnabled(bool value) async {
+    if (_isEnabled == value) return;
+    _isEnabled = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_kEnabled, value);
+  }
+
+  Future<void> toggle() => setEnabled(!_isEnabled);
+}
+```
+
+<Warning>
+  Developer mode should be disabled before handing the device to end users or parents. When enabled, all phonemes and rewards appear unlocked — this misrepresents the free tier experience and defeats the purpose of any Premium demo. The toggle is only accessible from the adult dashboard behind the parent PIN gate.
+</Warning>
+
+**What developer mode does and does not do:**
+
+| ✅ Does | ❌ Does not |
+|--------|------------|
+| Makes all phoneme stations appear accessible | Modify `completedPhonemes` or `practicedPhonemes` |
+| Shows all reward characters as unlocked | Award or remove points |
+| Persists across app restarts | Change the `isPremiumEnabled` value in `PremiumStore` |
+| Reverts instantly on toggle-off | Write anything to Supabase |
+
+The `DeveloperScope.of(context).isEnabled` value is checked alongside `PremiumScope.of(context).canAccess(phoneme)` in screens that render station accessibility. When developer mode is on, the Premium check is bypassed entirely.
+
+---
+
+## PremiumScope
+
+`PremiumScope` follows the same `InheritedNotifier` pattern as `ProfileScope` and `DeveloperScope`:
+
+```dart
+class PremiumScope extends InheritedNotifier<PremiumStore> {
+  const PremiumScope({
+    super.key,
+    required PremiumStore store,
+    required super.child,
+  }) : super(notifier: store);
+
+  static PremiumStore of(BuildContext context) {
+    final scope = context.dependOnInheritedWidgetOfExactType<PremiumScope>();
+    assert(scope?.notifier != null, 'No PremiumScope found in tree.');
+    return scope!.notifier!;
+  }
+}
+```
+
+Because `PremiumScope` uses `InheritedNotifier`, any widget that calls `PremiumScope.of(context)` will rebuild automatically when `PremiumStore` calls `notifyListeners()`. This means that activating Premium from the parent dashboard causes `ChildHomeScreen` — which is already mounted under the Navigator — to rebuild immediately and unlock all stations without any manual refresh.

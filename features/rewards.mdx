@@ -1,0 +1,124 @@
+---
+title: "Rewards and Animated Characters in VOZI"
+sidebarTitle: "Rewards"
+description: "How VOZI rewards children for phoneme mastery — points, Rive animated characters, and the rewards screen that shows unlocked companions."
+---
+
+VOZI motivates children through a visible, tangible reward system tied directly to phoneme mastery. Each time a child completes a phoneme session with 90% or better accuracy, they earn 10 points and unlock a unique animated character — a Rive-powered companion that appears in their personal rewards gallery. Characters stay locked (shown with a blur-and-padlock preview) until earned, giving children a concrete goal beyond just finishing a session. The rewards gallery is accessible from the child home screen at any time via the **Mis recompensas** card.
+
+## Earning Points and Completing Sounds
+
+Progress in VOZI is tracked through two separate sets stored on each `ChildProfile`:
+
+<CardGroup cols={2}>
+  <Card title="practicedPhonemes" icon="microphone">
+    Added whenever a child **finishes any session** for a phoneme, regardless of score. Marks the phoneme as attempted and **unlocks the next station** on the learning path. The 90% threshold does not apply here — practicing once is enough to advance.
+  </Card>
+  <Card title="completedPhonemes" icon="star">
+    Added only when a session is **rewarded** (≥90% accuracy, i.e., 9 of 10 words correct). Triggers the ✓ visual on the station circle, awards **10 points**, and unlocks the corresponding Rive character in the rewards gallery.
+  </Card>
+</CardGroup>
+
+<Note>
+  Practicing a phoneme (any result) always unlocks the next phoneme on the path. Only the reward — the 10 points and the animated character — requires the 90% threshold. This design avoids frustrating children who are still learning a sound.
+</Note>
+
+This logic lives in `ProfileStore.finishPhoneme()`:
+
+```dart
+void finishPhoneme(String phonemeCode, {required bool rewarded, int points = 10}) {
+  child.practicedPhonemes.add(phonemeCode);  // always
+  if (rewarded) {
+    final isNew = child.completedPhonemes.add(phonemeCode);
+    if (isNew) child.points += points;        // only once per phoneme
+  }
+}
+```
+
+Points only accumulate once per phoneme — completing the same sound multiple times does not award additional points.
+
+## Rive Animated Characters
+
+Each of the 9 phonemes is paired with a unique animated character. The characters are defined in `Reward.all`, sourced from the same catalog as VOZI iOS (`SkinCatalog.swift`). The `.riv` animation files live in `assets/rive/`.
+
+| Phoneme | Character Name | Rive File | Fallback Emoji |
+|---|---|---|---|
+| `R` | Rayo | `skin_r.riv` | ⚡ |
+| `RR` | Ronrro | `skin_rr.riv` | 🐾 |
+| `S` | Sisi | `skin_s.riv` | ☀️ |
+| `L` | Lilo | `skin_l.riv` | 🌙 |
+| `TR` | Triko | `skin_tr.riv` | 🚋 |
+| `PR` | Priko | `skin_pr.riv` | 👑 |
+| `PL` | Pluki | `skin_pl.riv` | 🍽️ |
+| `BR` | Bruno | `skin_br.riv` | 👋 |
+| `BL` | Blupi | `skin_bl.riv` | 🧊 |
+
+The `Reward` model associates each character to its unlocking phoneme:
+
+```dart
+class Reward {
+  final String name;        // character display name
+  final String rivFile;     // filename without extension, e.g. "skin_r"
+  final String emoji;       // fallback if .riv fails to load
+  final String phonemeCode; // phoneme that must be completed to unlock
+}
+```
+
+When a `.riv` file fails to load (e.g., missing asset), `_RewardArt` catches the error and falls back to rendering the emoji at 88sp — the app never crashes due to a missing animation file.
+
+## The Rewards Screen
+
+`RewardsScreen` is accessible from the child home screen by tapping the **Mis recompensas** card. It displays a vertical list of large reward cards, one per character.
+
+The screen header shows the child's avatar, name, point total, and an unlocked/total counter (e.g., "2/9"). Each reward card shows:
+
+- A 300dp-tall character stage with the phoneme's identity color gradient as background
+- The **Rive animation** playing live if the character is unlocked
+- A **blurred preview** of the character with a padlock overlay if still locked — so children can see a hint of what they're working toward without spoiling the full reveal
+- The character's name (always visible, even when locked)
+- A status chip: **Desbloqueado** (green) or **Bloqueado** (grey)
+- The unlock requirement: "Completa el sonido X" for locked characters, "¡Ya es tuyo!" for unlocked ones
+
+<Accordion title="Developer Mode and Rewards">
+  When Developer Mode is enabled in the parent dashboard, `RewardsScreen` treats all rewards as unlocked for demo purposes. This is achieved by the `devMode` flag in the screen:
+
+  ```dart
+  final devMode = developer.isEnabled;
+  bool isUnlocked(Reward r) =>
+      devMode || child.completedPhonemes.contains(r.phonemeCode);
+  ```
+
+  Developer Mode does **not** modify `completedPhonemes` — it is purely a display override for demonstrations.
+</Accordion>
+
+## Session Feedback
+
+`AudioAssetService` plays audio feedback during practice sessions. All feedback sounds are MP3 files bundled in the app's asset directory. The app picks a random track from each category on every play:
+
+<CardGroup cols={3}>
+  <Card title="Correct Sound" icon="check">
+    10 MP3 files in `assets/audio/feedback/correct/`. Played via `_audio.playCorrect()` when a word is evaluated as passed.
+  </Card>
+  <Card title="Incorrect Sound" icon="rotate-left">
+    10 MP3 files in `assets/audio/feedback/incorrect/`. Played via `_audio.playIncorrect()` when a word fails or no voice is detected.
+  </Card>
+  <Card title="Session Complete" icon="trophy">
+    5 MP3 files in `assets/audio/feedback/session/`. Played via `_audio.playSessionComplete()` immediately when the session ends, before the completion dialog appears.
+  </Card>
+</CardGroup>
+
+Playing a random sound from a category each time keeps the feedback feeling fresh rather than repetitive, which is particularly important for the 4–7 age group.
+
+## Confetti
+
+When a session is rewarded (≥90% accuracy), `showVoziConfetti(context)` is called immediately after the completion dialog is shown. The confetti is a Flutter `OverlayEntry` containing `_ConfettiBurst`, a `CustomPainter`-based animation with 34 particles.
+
+Key design properties of `VoziConfetti`:
+
+- **One-shot:** the `AnimationController` runs forward exactly once (1.6 seconds) and does not repeat
+- **Non-blocking:** the entire overlay is wrapped in `IgnorePointer`, so taps pass through to the completion dialog and navigation underneath
+- **Auto-destroying:** when the animation completes, `OverlayEntry.remove()` is called automatically — no cleanup needed from calling code
+- **Fixed seed:** particles use `math.Random(42)` so the pattern is always visually "nice" and deterministic
+- **VOZI palette:** particles cycle through coral, sunshine, sky, mint, lavender, and bubblegum colors
+
+The confetti is intentionally inserted **after** the dialog so it renders on top of it, reinforcing the celebratory moment without blocking the "Volver al camino" button.

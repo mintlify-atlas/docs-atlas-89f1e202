@@ -1,47 +1,151 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get Started with VOZI on Android"
+sidebarTitle: "Quickstart"
+description: "Clone VOZI, configure Supabase, and run the app on a physical Android device in minutes. Covers environment setup, SQL migrations, and first launch."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
-
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
-
-## Prerequisites
-
-Before you begin, you must have:
-
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
-
-## Get started
+This guide is for developers who want to build, run, or contribute to VOZI. By the end you will have the app installed on a physical Android device, connected to a Supabase backend (or running fully offline), and ready to walk through a complete phoneme practice session as both a child and an adult user.
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
+
+  <Step title="Prerequisites">
+    Before cloning the repository, confirm you have the following tools and accounts ready:
+
+    - **Flutter SDK** — VOZI requires Dart SDK `^3.12.2`. Install Flutter from [flutter.dev](https://flutter.dev/docs/get-started/install) if you haven't already.
+    - **Android Studio or Android SDK command-line tools** — needed to build and sign the APK. Android Studio is recommended for its built-in AVD manager and Gradle integration.
+    - **Physical Android device with USB debugging enabled** — VOZI's on-device speech recognizer behaves differently on emulators. A real device is strongly recommended for testing the Hablar (Speak) feature.
+    - **Supabase project** *(optional)* — create a free project at [supabase.com](https://supabase.com). The app works fully offline without it; Supabase is only needed for adult account auth and progress sync.
+
+    Verify your Flutter installation and connected toolchains:
 
     ```bash
-    npm install your-package
+    flutter doctor
     ```
+
+    Resolve any issues flagged under **Android toolchain** before continuing.
   </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
+
+  <Step title="Clone and Install Dependencies">
+    Clone the repository and fetch all pub packages:
+
+    <CodeGroup>
+      ```bash Clone
+      git clone <URL_DEL_REPOSITORIO>
+      cd vozi-android
+      ```
+
+      ```bash Install dependencies
+      flutter pub get
+      ```
+    </CodeGroup>
+
+    `flutter pub get` resolves all dependencies declared in `pubspec.yaml`, including `flutter_tts`, `speech_to_text`, `audioplayers`, `rive`, `supabase_flutter`, and `flutter_dotenv`.
+  </Step>
+
+  <Step title="Configure Environment Variables">
+    VOZI reads Supabase credentials from a `.env` file at runtime. Copy the provided template and fill in your project values:
 
     ```bash
-    your-cli init
+    cp .env.example .env
     ```
+
+    Open `.env` and add your Supabase project URL and anon key:
+
+    ```env
+    SUPABASE_URL=https://your-project.supabase.co
+    SUPABASE_ANON_KEY=your-anon-key
+    ```
+
+    Find these values in your Supabase dashboard under **Project Settings → API**.
+
+    <Note>
+      Leaving both values blank is valid. When `SUPABASE_URL` and `SUPABASE_ANON_KEY` are empty, `SupabaseConfig.isConfigured` returns `false` and the app skips all backend initialization. Every feature — profiles, practice sessions, rewards, and the adult dashboard — works fully on-device without Supabase.
+    </Note>
   </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
+
+  <Step title="Run Supabase SQL Scripts">
+    If you are connecting a Supabase backend, run the migration scripts in order from the `supabase/final_reset/` directory using the **Supabase SQL Editor** (dashboard → SQL Editor → New query):
+
+    | Order | File | Purpose |
+    |-------|------|---------|
+    | 1 | `02_create_simple_schema.sql` | Creates the 5 application tables: `adults`, `children`, `sound_progress`, `practice_attempts`, `premium` |
+    | 2 | `03_rls_simple.sql` | Applies Row Level Security policies so each adult can only read their own children's data |
+    | 3 | `04_verify_tables.sql` | Queries every table to confirm the schema was created correctly |
+
+    Run each script in the numbered order shown. Skipping `03_rls_simple.sql` will leave your tables accessible to any authenticated user in the project.
+  </Step>
+
+  <Step title="Run on Device">
+    Connect your Android device via USB and confirm Flutter can see it:
 
     ```bash
-    your-cli start
+    flutter devices
     ```
+
+    You will see output similar to:
+
+    ```
+    1 connected device:
+
+    Pixel 7 (mobile) • 1ae8390b • android-arm64 • Android 14 (API 34)
+    ```
+
+    Run VOZI on the detected device:
+
+    <CodeGroup>
+      ```bash Run (auto-detect device)
+      flutter run
+      ```
+
+      ```bash Run (specific device)
+      flutter run -d 1ae8390b
+      ```
+    </CodeGroup>
+
+    Flutter will compile the app, install it on the device, and attach the debug console. The first build takes longer as Gradle downloads dependencies.
   </Step>
+
+  <Step title="Explore the App">
+    Once the app is running, walk through the full user flow:
+
+    1. **Create a child profile** — on the Profiles screen, tap the add button and enter a name. The profile is saved locally to `shared_preferences`.
+    2. **Enter the practice path** — select the profile to reach the child home screen, then start the learning path. The first phoneme available is **R**.
+    3. **Try Escuchar (Listen)** — tap the Listen button on any word card. The app plays the MP3 from `assets/audio/words/` or falls back to TTS if the file is not present.
+    4. **Try Hablar (Speak)** — tap the Speak button. The microphone activates and the on-device recognizer transcribes your utterance. A similarity score ≥ 90% registers as correct.
+    5. **Access the adult panel** — look for the parent/settings entry point and enter PIN **`1234`** to reach the adult dashboard, where you can review progress and access the Premium demo.
+  </Step>
+
 </Steps>
 
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+## Troubleshooting
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
+<Warning>
+  **`GeneratedPluginRegistrant is defined multiple times`**
+
+  This Gradle error appears when a previous build left stale generated files on the device or in the build cache. It most commonly happens after switching Flutter channels or updating plugin versions. To fix it:
+
+  1. Manually uninstall VOZI from the Android device.
+  2. Run the following commands:
+
+  ```bash
+  rm -rf build
+  rm -rf android/.gradle
+  flutter pub get
+  flutter run
+  ```
+
+  Or, if you need to target a specific device:
+
+  ```bash
+  rm -rf build
+  rm -rf android/.gradle
+  flutter pub get
+  flutter run -d <DEVICE_ID>
+  ```
+
+  These steps clear all cached build artifacts and force a clean Gradle build.
+</Warning>
+
+<Tip>
+  If `flutter run` hangs at **"Installing build/app/outputs/flutter-apk/app-debug.apk..."**, the app may still be installed from a previous build. Uninstall it from the device's app settings and retry.
 </Tip>

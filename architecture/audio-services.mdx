@@ -1,0 +1,232 @@
+---
+title: "Audio Services: TTS, STT, and Asset Audio in VOZI"
+sidebarTitle: "Audio Services"
+description: "How VOZI handles text-to-speech, on-device speech recognition, and MP3 asset playback — the three audio services that power the Listen and Speak exercise flow."
+---
+
+Every exercise in VOZI involves three distinct audio operations: playing a model pronunciation of the target word, listening to the child's attempt through the microphone, and playing a feedback sound after evaluation. These are handled by three separate services — `TtsService`, `AudioAssetService`, and `SttService` — each with a narrow responsibility. `ExerciseScreen` coordinates them, ensuring that only one audio operation is active at any moment and that the microphone is never blocked by a playback player.
+
+---
+
+## TtsService
+
+`TtsService` reads words aloud using the Android system TTS engine. It acts as a **fallback** for the "Escuchar" (Listen) button: if a real MP3 recording exists in the asset bundle, `AudioAssetService` plays it instead. TTS is only used when the audio asset is missing.
+
+| Setting | Value | Reason |
+|---------|-------|--------|
+| Language | `es-ES` | Spanish-only app |
+| Speech rate | `0.45` | Slower than default so children can follow clearly |
+| Pitch | `1.0` | Natural pitch |
+| `awaitSpeakCompletion` | `true` | The caller can `await speak()` and know when audio ends |
+
+```dart
+class TtsService {
+  final FlutterTts _tts = FlutterTts();
+  bool _configured = false;
+
+  Future<void> _ensureConfigured() async {
+    if (_configured) return;
+    await _tts.setLanguage('es-ES');
+    await _tts.setSpeechRate(0.45);
+    await _tts.setPitch(1.0);
+    await _tts.awaitSpeakCompletion(true);
+    _configured = true;
+  }
+
+  /// Reads text aloud. Stops any current speech first.
+  Future<void> speak(String text) async {
+    await _ensureConfigured();
+    await _tts.stop();
+    await _tts.speak(text);
+  }
+
+  Future<void> stop() => _tts.stop();
+}
+```
+
+Configuration is lazy — `_ensureConfigured()` runs only on the first `speak()` call, so construction is free. A new instance can be created per screen without cost.
+
+---
+
+## AudioAssetService
+
+`AudioAssetService` plays real MP3 recordings bundled in the app. It uses two independent `AudioPlayer` instances: one for word audio (`_word`) and one for feedback sounds (`_fx`). This separation means a feedback chime never cuts off a word recording mid-play.
+
+**Audio focus configuration is critical.** By default, `audioplayers` requests `AUDIOFOCUS_GAIN` on Android, which holds exclusive audio focus after playback and blocks the microphone from being available to the STT engine on subsequent words. `AudioAssetService` configures both players with `AudioContextConfigFocus.mixWithOthers` (Android: `AUDIOFOCUS_NONE`) so playback never seizes audio focus and the microphone is always available for the next exercise round.
+
+### Methods
+
+<Accordion title="playWord(String audioKey) → Future<bool>">
+  Looks up `assets/audio/words/<audioKey>.mp3` in the asset bundle. If the file does not exist, returns `false` immediately and the caller falls back to `TtsService`. If the file exists, plays it and waits for completion (up to 6 seconds), then returns `true`. Once the audio has started playing, this method always returns `true` even if the player emits an error mid-stream — the caller must never fall back to TTS while audio is audibly playing.
+</Accordion>
+
+<Accordion title="playCorrect() / playIncorrect() / playSessionComplete()">
+  Each method picks a random file from its feedback folder and plays it on `_fx`:
+
+  | Method | Asset folder | File count |
+  |--------|-------------|-----------|
+  | `playCorrect()` | `assets/audio/feedback/correct/` | 10 files (`correct_01.mp3` … `correct_10.mp3`) |
+  | `playIncorrect()` | `assets/audio/feedback/incorrect/` | 10 files (`incorrect_01.mp3` … `incorrect_10.mp3`) |
+  | `playSessionComplete()` | `assets/audio/feedback/session/` | 5 files (`session_complete_01.mp3` … `session_complete_05.mp3`) |
+
+  If an individual feedback file is missing, the exception is silently swallowed — visual feedback remains and the exercise continues normally.
+</Accordion>
+
+<Accordion title="stop() and dispose()">
+  `stop()` calls `stop()` then `release()` on both players. `release()` is essential: it frees the audio focus and any native audio resources, ensuring the STT microphone can acquire them without delay on the next word. `dispose()` tears down the `AudioPlayer` objects entirely when the `ExerciseScreen` is disposed.
+</Accordion>
+
+```dart
+// Typical usage in ExerciseScreen
+final _audio = AudioAssetService();
+
+Future<void> _playWord(PracticeWord word) async {
+  final hadRealAudio = await _audio.playWord(word.audioKey);
+  if (!hadRealAudio) {
+    await _tts.speak(word.text); // TTS fallback only if no MP3
+  }
+}
+```
+
+<Note>
+  Each `ExerciseScreen` creates its own `AudioAssetService` instance. The service holds two `AudioPlayer` objects; call `dispose()` in the screen's `dispose()` method to release them. Do not share a single instance across screens.
+</Note>
+
+---
+
+## SttService (Speech-to-Text)
+
+`SttService` wraps the `speech_to_text` package for on-device Spanish speech recognition. It is a **singleton** — exactly one instance exists for the entire app lifetime.
+
+```dart
+class SttService {
+  SttService._();
+  static final SttService _instance = SttService._();
+  factory SttService() => _instance;
+  // ...
+}
+```
+
+The singleton is necessary because `speech_to_text` registers its `onStatus` and `onError` callbacks only once during the first `initialize()` call. If each `ExerciseScreen` created a new `SttService`, the callbacks from the engine would still point to the first (now-disposed) instance, and all subsequent phoneme screens would receive no recognition results.
+
+### Initialization and Locale Selection
+
+`init()` requests microphone permission and initializes the recognition engine. It retries safely if called multiple times — `_available = true` short-circuits immediately on subsequent calls.
+
+After a successful init, `_chooseSpanishLocale()` iterates the device's available speech locales in priority order:
+
+1. Exact match `es_ES`
+2. Any locale starting with `es` (e.g. `es_MX`, `es_AR`)
+3. System locale as a last resort
+
+If no Spanish locale is found, a debug warning is logged and `es_ES` is used as a hardcoded fallback.
+
+<Tip>
+  For best recognition accuracy on physical Android devices, install the **Spanish (Spain)** language pack: **Settings → General Management → Language → Text-to-Speech** → download the Spanish voice. Without a local Spanish model, the device may fall back to a generic recognizer or route to a cloud API.
+</Tip>
+
+### Listening Flow
+
+The two-click "Speak" button model maps to two internal state values:
+
+```
+Click 1: listen() called
+  └── _Attempt.preparing  (mic being initialized)
+      └── onStatus('listening') fires
+          └── _ready = true
+              └── onReady() callback → UI shows "Habla ahora" indicator
+
+Click 2: stopAndReport() called
+  └── _speech.stop()
+      └── _report() fires immediately
+          └── onResult(SttResult) callback → ExerciseScreen evaluates
+```
+
+```dart
+await _stt.listen(
+  onResult: (result) {
+    // result.words: the recognized text (may be empty)
+    // result.available: false if mic permission was denied
+    // result.error: engine error code if recognition failed
+    final wordResult = WordEvaluator.evaluate(
+      phoneme: phoneme,
+      target: word.text,
+      transcription: result.words,
+    );
+    store.recordAttempt(/* ... */);
+  },
+  onReady: () {
+    setState(() => _micReady = true); // show "Habla ahora"
+  },
+  targetWord: word.text, // for debug logs only
+);
+```
+
+### Safety Caps
+
+`listen()` always sets two time limits to prevent the recognizer from running indefinitely:
+
+| Option | Value | Purpose |
+|--------|-------|---------|
+| `listenFor` | 60 seconds | Hard cap on total listening session |
+| `pauseFor` | 30 seconds | Auto-stop after 30 s of silence |
+
+Both caps are intentionally long. The child controls when to stop by pressing the button. If a cap expires, `_report()` is called with whatever partial text was recognized up to that point — the attempt is never silently discarded.
+
+`partialResults: true` is also set so that the last partial transcript is always available in `_lastWords`. If the child stops the mic before the engine emits a final result, `stopAndReport()` can still evaluate the partial text rather than returning an empty string.
+
+### SttResult
+
+```dart
+class SttResult {
+  const SttResult({
+    required this.words,
+    required this.available,
+    this.error,
+  });
+
+  /// The recognized text. Empty string if nothing was heard.
+  final String words;
+
+  /// false if the recognizer could not start (no permission, no engine).
+  final bool available;
+
+  /// Engine error code, e.g. "error_no_match", "error_speech_timeout".
+  final String? error;
+}
+```
+
+### cancel() vs stop() vs stopAndReport()
+
+| Method | Behavior |
+|--------|----------|
+| `stopAndReport()` | Stops listening and immediately calls `onResult` with current text. Used by the second button click. |
+| `stop()` | Stops the engine without reporting. Used when navigating away mid-attempt. |
+| `cancel()` | Discards all state — clears `_lastWords`, resets flags, cancels the engine session. Called before starting a fresh listen for the next word. |
+
+---
+
+## Media Coordination
+
+`ExerciseScreen` enforces a strict rule: **no two audio operations ever overlap**. Before any new audio action (playing a word, starting the mic, playing feedback), a helper method stops all three services:
+
+```dart
+Future<void> _stopAllMediaAndSpeech() async {
+  await _audio.stop();   // stops & releases AudioAssetService players
+  await _tts.stop();     // stops TtsService
+  await _stt.cancel();   // cancels any in-progress STT session
+}
+```
+
+This is called before `playWord()`, before `listen()`, and on screen disposal. The pattern prevents a scenario where, for example, a slow TTS utterance from the previous word is still playing when the child presses "Hablar" for the next.
+
+---
+
+## Privacy
+
+VOZI processes speech **entirely on-device**. The STT engine (Android's `SpeechRecognizer` API) returns a text string — VOZI never receives or stores raw audio. The recognized text (`SttResult.words`) is used only to:
+
+1. Evaluate correctness via `WordEvaluator`
+2. Store as `SpeechAttempt.recognizedText` in local `shared_preferences` for the adult dashboard
+
+It is **not** included in Supabase sync payloads. The remote `practice_attempts` table stores only `phoneme_code`, `target_word`, `was_correct`, `score`, `age_band_code`, and `created_at` — there is no `recognized_text` column.

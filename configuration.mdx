@@ -1,0 +1,136 @@
+---
+title: "Configure VOZI: Environment Variables and App Settings"
+sidebarTitle: "Configuration"
+description: "Reference for all VOZI environment variables, app config constants, and Supabase connection settings used to customize the app for your deployment."
+---
+
+VOZI uses two complementary configuration layers. Runtime credentials — specifically the Supabase project URL and anon key — are loaded from a `.env` file at startup using the `flutter_dotenv` package. Compile-time constants such as the app name, tagline, and adult PIN are defined as `static const` values in `lib/core/config/app_config.dart`. Neither file contains secrets that belong in version control: `.env` is listed in `.gitignore`, and `AppConfig` contains only non-sensitive demo values.
+
+## Environment Variables
+
+VOZI reads two variables from the `.env` file at the root of the project. `flutter_dotenv` loads the file during `main()` before any other initialization runs. If the file is missing or either variable is blank, the app starts in fully local mode with no Supabase connection.
+
+<Note>
+  The `.env` file is declared as a Flutter asset in `pubspec.yaml` so that `flutter_dotenv` can access it at runtime. It is explicitly excluded from version control via `.gitignore`. Never commit a `.env` file containing real credentials to the repository.
+</Note>
+
+<ParamField path="SUPABASE_URL" type="string" required>
+  The full HTTPS URL of your Supabase project, e.g. `https://abcdefghij.supabase.co`. Found in your Supabase dashboard under **Project Settings → API → Project URL**. When this value is empty, `SupabaseConfig.isConfigured` returns `false` and Supabase is never initialized.
+</ParamField>
+
+<ParamField path="SUPABASE_ANON_KEY" type="string" required>
+  The `anon` / public API key for your Supabase project. Found in **Project Settings → API → Project API Keys**. This key is safe to include in a client app because Row Level Security (RLS) policies restrict what it can read or write. The `service_role` key must **never** be placed in this file or anywhere in the app.
+</ParamField>
+
+A complete, correctly formatted `.env` file looks like this:
+
+```env
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_ANON_KEY=your-anon-key
+```
+
+The `.env.example` template committed to the repository ships with both values intentionally blank:
+
+```env
+SUPABASE_URL=
+SUPABASE_ANON_KEY=
+```
+
+Copy this template with `cp .env.example .env` and fill in your own values before running the app.
+
+## App Config Constants
+
+`lib/core/config/app_config.dart` holds compile-time constants that control global app identity and the adult PIN gate. These values are not secret and do not vary between environments.
+
+```dart
+class AppConfig {
+  AppConfig._();
+
+  static const String appName = 'VOZI';
+  static const String tagline = 'Aplicación educativa de práctica de sonidos';
+
+  /// Demo PIN guarding the adult dashboard. Not a real authentication layer.
+  static const String parentPin = '1234';
+
+  /// Number of digits in the PIN entry field.
+  static const int parentPinLength = 4;
+}
+```
+
+| Constant | Type | Value | Description |
+|----------|------|-------|-------------|
+| `appName` | `String` | `'VOZI'` | Display name used across the UI. |
+| `tagline` | `String` | `'Aplicación educativa de práctica de sonidos'` | Subtitle shown on splash / onboarding screens. |
+| `parentPin` | `String` | `'1234'` | PIN required to enter the adult dashboard (`/parent-gate` route). Demo-only; not a secure credential. |
+| `parentPinLength` | `int` | `4` | Drives the PIN input widget's digit count. Must match the length of `parentPin`. |
+
+<Warning>
+  `parentPin` is a simple barrier for academic demonstration purposes only. It is a hardcoded compile-time constant, not a hashed or stored credential. Do not rely on it as a security boundary in a production deployment.
+</Warning>
+
+## Supabase Config
+
+`lib/core/config/supabase_config.dart` is the single access point for Supabase credentials within the app. It reads `SUPABASE_URL` and `SUPABASE_ANON_KEY` from `dotenv` at runtime and exposes them through static getters.
+
+```dart
+class SupabaseConfig {
+  SupabaseConfig._();
+
+  static String get url => _read('SUPABASE_URL');
+  static String get anonKey => _read('SUPABASE_ANON_KEY');
+  static bool get isConfigured => url.isNotEmpty && anonKey.isNotEmpty;
+
+  static String _read(String key) {
+    try {
+      return (dotenv.env[key] ?? '').trim();
+    } catch (_) {
+      return '';
+    }
+  }
+}
+```
+
+The `_read` helper catches any exception thrown when `dotenv` has not been initialized (for example, during unit tests or when `.env` is absent) and returns an empty string instead of crashing. This means:
+
+- **`isConfigured == true`** — both `url` and `anonKey` are non-empty strings; `SupabaseClientProvider.initialize()` in `main.dart` proceeds with Supabase setup.
+- **`isConfigured == false`** — at least one credential is missing or blank; Supabase is never initialized and the app runs entirely on local `shared_preferences` storage.
+
+`SupabaseClientProvider.initialize()` is called inside a `try/catch` in `main()`, so even a network failure or misconfigured URL during initialization will not prevent the app from launching.
+
+## Asset Structure
+
+VOZI bundles all media assets inside the `assets/` directory. These assets are declared in `pubspec.yaml` and packaged into the APK at build time. The directory layout is:
+
+```
+assets/
+├── words/                        # PNG image cards, one per practice word
+│   └── word_<word>.png           # e.g. word_rana.png, word_perro.png
+├── audio/
+│   ├── words/                    # MP3 pronunciations for each practice word
+│   ├── feedback/
+│   │   ├── correct/              # Audio clips played on a correct attempt
+│   │   ├── incorrect/            # Audio clips played on an incorrect attempt
+│   │   └── session/              # Audio clips played when a phoneme is completed
+├── rive/                         # Rive (.riv) animated reward characters
+└── images/
+    └── vozi_logo.png             # App logo
+```
+
+These asset folders are registered in `pubspec.yaml` under the `flutter:` section:
+
+```yaml
+flutter:
+  assets:
+    - assets/words/
+    - assets/audio/words/
+    - assets/audio/feedback/correct/
+    - assets/audio/feedback/incorrect/
+    - assets/audio/feedback/session/
+    - assets/rive/
+    - .env
+    - assets/images/vozi_logo.png
+```
+
+Note that `.env` itself is listed as an asset. This is required by `flutter_dotenv` to locate and read the file at runtime via Flutter's asset bundle. Without this entry, `dotenv.load()` would fail even if the file exists on disk.
+
+Audio playback for word pronunciations and feedback cues is handled by the `audioplayers` package. TTS via `flutter_tts` serves as a fallback when an MP3 for a specific word is not present in `assets/audio/words/`. Rive animations in `assets/rive/` are rendered by the `rive` package and triggered when a child completes a full phoneme session.

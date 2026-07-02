@@ -1,0 +1,136 @@
+---
+title: "The Child Experience: Profiles, Path, and Navigation"
+sidebarTitle: "Child Experience"
+description: "How children navigate VOZI — creating profiles, selecting avatars, and progressing through the phoneme learning path with a Duolingo-style station map."
+---
+
+When a child opens VOZI, the app takes them from a pastel welcome screen straight to their learning path — no account creation, no password, no friction. A parent or educator sets up a profile once, and the child taps their avatar card to jump into a Duolingo-style phoneme map where each station represents a Spanish sound to practice. The entire child-facing flow is designed for ages 4–7: large tap targets, emoji avatars, animated station circles, and a single forward-moving path with clear visual states.
+
+## Welcome Screen and Profile Selection
+
+The app opens on `WelcomeScreen`, which shows the VOZI logo, the tagline, and a white rounded card with a large coral **Iniciar** button. Tapping it pushes `ProfilesScreen` onto the navigation stack via `AppRouter.profiles`.
+
+<Steps>
+  <Step title="App opens">
+    `WelcomeScreen` is displayed. No login is required for children.
+  </Step>
+  <Step title="Tap Iniciar">
+    The app navigates to `ProfilesScreen` (`/profiles`), which lists all child profiles stored locally on the device.
+  </Step>
+  <Step title="Select a profile">
+    Tapping a profile card calls `ProfileScope.of(context).select(profile.id)` and pushes `ChildHomeScreen` (`/home`).
+  </Step>
+  <Step title="No profiles yet">
+    If no profiles exist, an empty-state view appears with a single **Crear perfil** button that navigates to `CreateProfileScreen`.
+  </Step>
+</Steps>
+
+<Note>
+  Children never log in. Authentication is optional and adults-only (via Supabase). Profile data is stored locally on the device using `shared_preferences` and can optionally sync to the cloud from the parent dashboard.
+</Note>
+
+## Creating a Profile
+
+`CreateProfileScreen` collects three pieces of information before creating the profile and navigating directly to `ChildHomeScreen`. The name field accepts a nickname or alias — the app explicitly avoids using real names.
+
+<CardGroup cols={3}>
+  <Card title="Name (alias)" icon="tag">
+    A short nickname or alias for the child. Real names are not required. The hint text reads "Apodo del niño o niña".
+  </Card>
+  <Card title="Age Band" icon="children">
+    Choose between **4 a 5 años** (`AgeBand.young`, code `4-5`) and **6 a 7 años** (`AgeBand.older`, code `6-7`). Shown as two large tap targets.
+  </Card>
+  <Card title="Avatar" icon="face-smile">
+    One of 8 emoji avatars displayed in a centered wrap grid. The selection is shown as a large preview at the top of the screen.
+  </Card>
+</CardGroup>
+
+The `ChildProfile` model fields are:
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | `String` (UUID) | Stable unique identifier, compatible with Supabase |
+| `name` | `String` | Child's alias/nickname |
+| `ageBand` | `AgeBand` | `young` (4–5) or `older` (6–7) |
+| `avatar` | `AvatarOption` | Selected avatar from the 8-option catalog |
+| `points` | `int` | Total points earned (starts at 0) |
+| `completedPhonemes` | `Set<String>` | Phoneme codes completed at ≥90% accuracy |
+| `practicedPhonemes` | `Set<String>` | Phoneme codes attempted at least once |
+| `updatedAt` | `DateTime` | Last local modification timestamp (UTC) |
+| `isDirty` | `bool` | Whether there are unsynced local changes |
+
+### Available Avatars
+
+The 8 avatars are defined in `AvatarOption.all`. The `key` is what gets saved and synced; the emoji is display-only. The first 6 keys are cross-platform compatible with VOZI iOS.
+
+| Key | Emoji | Tint Color |
+|---|---|---|
+| `fox` | 🦊 | `VoziTheme.peach` |
+| `bear` | 🐻 | `VoziTheme.sunshine` |
+| `cat` | 🐱 | `VoziTheme.bubblegum` |
+| `owl` | 🦉 | `VoziTheme.lavender` |
+| `fish` | 🐠 | `VoziTheme.teal` |
+| `star` | ⭐ | `VoziTheme.coral` |
+| `rabbit` | 🐰 | `VoziTheme.sky` |
+| `dog` | 🐶 | `VoziTheme.mint` |
+
+## The Phoneme Learning Path
+
+`ChildHomeScreen` displays a Duolingo-style path under the heading **Tu camino de sonidos**. Each of the 9 phonemes appears as a circular station that zigzags down the screen using a custom `_PathConnectorPainter` with cubic Bézier curves. Stations alternate left and right. The currently active station has an animated pulsing ring (`_PulseRing`) and a floating **¡Vamos!** badge.
+
+### Station States
+
+Each station is rendered according to a `_Stop` enum value computed by `_ProgressPath._statusFor()`:
+
+| State | Visual | Condition |
+|---|---|---|
+| `completed` | ✓ check icon + gold star accent | Phoneme is in `completedPhonemes` (≥90% session) |
+| `available` | Phoneme code text + play badge | Accessible; previous phoneme has been practiced |
+| `locked` | 🔒 lock icon, muted gradient | Previous phoneme has not yet been practiced |
+| `premiumLocked` | 👑 crown icon, gold gradient | App is not in Premium mode and phoneme is not `R` |
+
+<Note>
+  Only the **R** phoneme is free. All other phonemes (`RR`, `S`, `L`, `TR`, `PR`, `PL`, `BR`, `BL`) are `premiumLocked` in the free tier and show a message prompting children to ask an adult. Premium is managed exclusively in the parent dashboard.
+</Note>
+
+### Phoneme Progression Order
+
+The 9 phonemes are declared in `Phoneme` enum order. A phoneme is unlocked when the phoneme at `order - 1` appears in `practicedPhonemes` (any result unlocks the next; the 90% threshold only gates the reward, not progression).
+
+| Order | Code | Display Name | Color Token | Hex |
+|---|---|---|---|---|
+| 0 | `R` | R | `VoziTheme.coral` | `#FF7373` |
+| 1 | `RR` | RR | `VoziTheme.peach` | `#FF9E6B` |
+| 2 | `S` | S | `VoziTheme.sunshine` | `#FFC74D` |
+| 3 | `L` | L | `VoziTheme.sky` | `#59A8F5` |
+| 4 | `TR` | TR | `VoziTheme.mint` | `#4DCCA3` |
+| 5 | `PR` | PR | `VoziTheme.lavender` | `#AD8FF0` |
+| 6 | `PL` | PL | `VoziTheme.bubblegum` | `#F780BD` |
+| 7 | `BR` | BR | `VoziTheme.teal` | `#33BDC7` |
+| 8 | `BL` | BL | `VoziTheme.grape` | `#8C75EB` |
+
+Colors are resolved by `VoziTheme.phonemeColor(code)` and used consistently for station circles, connector curves, exercise screens, and reward cards.
+
+## Age Band Experience
+
+The age band selected at profile creation (`AgeBand.young` for 4–5, `AgeBand.older` for 6–7) is stored with the profile and displayed on the child home screen header below their name. In the current implementation the age band is informational and guides the overall educational intent of the app:
+
+- **4–5 years (`young`):** More audio support is expected; the Listen button is the primary interaction before speaking.
+- **6–7 years (`older`):** Greater autonomy; children are expected to attempt speaking sooner.
+
+The age band is also passed to attempt metrics when syncing to Supabase, so educators can segment progress data by age group.
+
+## Progress Reset
+
+Adults can reset a child's progress from two places in the app — both protected by the parent PIN gate:
+
+<Steps>
+  <Step title="Via the child home menu">
+    Tap the overflow menu (⋮) on `ChildHomeScreen` → **Reiniciar progreso**. A confirmation dialog appears before any data is cleared.
+  </Step>
+  <Step title="Via the parent dashboard">
+    Navigate to the parent dashboard → tap the red **Reiniciar progreso** button at the bottom.
+  </Step>
+</Steps>
+
+Resetting progress sets points to `0`, clears `completedPhonemes` and `practicedPhonemes`, and deletes the local attempt history. The profile itself (name, avatar, age band) is **not** deleted. The reset is marked `isDirty = true` so the next Supabase sync propagates the reset to the cloud.

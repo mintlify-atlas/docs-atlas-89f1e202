@@ -1,0 +1,116 @@
+---
+title: "Set Up the VOZI Supabase Backend"
+sidebarTitle: "Supabase Setup"
+description: "Create a Supabase project, run the SQL schema scripts, configure Row Level Security, and connect VOZI to your backend with a .env file."
+---
+
+VOZI is a local-first app — it works completely offline without any backend configuration. Supabase is an optional layer that unlocks two features: adult account login and manual cloud sync of child profiles and progress. If no `.env` file is present, or the credentials are invalid, the app silently falls back to local-only mode and every feature continues to work normally.
+
+## Prerequisites
+
+Before running the SQL scripts, make sure you have the following in place:
+
+- A [Supabase](https://supabase.com) account (the free tier is enough for development)
+- A new Supabase project created in the dashboard — note your **Project URL** and **anon/public key** for later
+- The VOZI Android repository cloned locally
+
+## Running the SQL Scripts
+
+The three SQL scripts in `supabase/final_reset/` must be run in order. Each script is additive — none of them drops existing tables — so they are safe to re-run if anything goes wrong midway.
+
+<Steps>
+  <Step title="Open the Supabase SQL Editor">
+    In your Supabase dashboard, go to **SQL Editor** in the left sidebar and open a new query tab.
+  </Step>
+
+  <Step title="Run 02_create_simple_schema.sql">
+    Copy the full contents of `supabase/final_reset/02_create_simple_schema.sql` into the editor and click **Run**.
+
+    This script creates the five tables that make up the VOZI schema:
+
+    - `adults` — one row per authenticated user
+    - `children` — child profiles linked to an adult
+    - `sound_progress` — aggregated phoneme progress per child
+    - `practice_attempts` — individual attempt metrics (no audio, no transcript)
+    - `premium` — premium entitlement per adult
+
+    It also installs the `vozi_touch_updated_at()` helper trigger function and the `vozi_handle_new_user()` auto-registration trigger.
+
+    <Note>
+      When a new adult registers, the `on_auth_user_created` trigger fires `vozi_handle_new_user()` automatically. This function inserts a matching row into the `adults` table using the new user's `id` and `email`, so the profile exists before the first sync. The `on conflict (id) do nothing` clause makes it idempotent — safe to run even if the row already exists.
+    </Note>
+  </Step>
+
+  <Step title="Run 03_rls_simple.sql">
+    Copy the full contents of `supabase/final_reset/03_rls_simple.sql` into a new query tab and click **Run**.
+
+    This script enables Row Level Security on all five tables and creates the policies that enforce data isolation: each authenticated adult can only read and write their own rows and the rows that belong to their children. A helper function `vozi_owns_child(p_child_id)` is also installed to keep the policies concise.
+  </Step>
+
+  <Step title="Run 04_verify_tables.sql">
+    Copy the full contents of `supabase/final_reset/04_verify_tables.sql` into a new query tab and click **Run**.
+
+    This script is read-only — it makes no changes. It runs several verification queries so you can confirm the reset completed correctly:
+
+    - The five tables exist in `public` and no old table names remain
+    - RLS is enabled on every table (`rowsecurity = true`)
+    - All expected policies are listed per table
+    - The column definitions match the schema
+    - The unique constraint on `sound_progress (child_id, sound_code)` is present
+    - The `on_auth_user_created` trigger is attached to `auth.users`
+
+    If all queries return the expected results, the backend is ready.
+  </Step>
+</Steps>
+
+## Connecting the App
+
+VOZI reads credentials from a `.env` file at the project root. The file is listed in `.gitignore` and must never be committed.
+
+**Step 1 — Create the file from the template:**
+
+```bash
+cp .env.example .env
+```
+
+**Step 2 — Fill in your credentials:**
+
+```env
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_ANON_KEY=your-anon-key
+```
+
+You can find both values in the Supabase dashboard under **Project Settings → API**:
+
+- **Project URL** → paste as `SUPABASE_URL`
+- **Project API keys → anon / public** → paste as `SUPABASE_ANON_KEY`
+
+<Warning>
+  Never commit real credentials to source control. The `.env` file is already in `.gitignore`, but double-check before pushing. The `service_role` key must never appear in the app — only the `anon` (public) key belongs here, and it is safe in the client because Row Level Security enforces data access.
+</Warning>
+
+**Step 3 — Run the app:**
+
+```bash
+flutter pub get
+flutter run
+```
+
+`SupabaseConfig` reads `SUPABASE_URL` and `SUPABASE_ANON_KEY` from `dotenv` at startup. If both are non-empty, `SupabaseClientProvider.initialize()` is called and the client is ready. The adult account screen and sync button become functional.
+
+## Offline Mode
+
+If the `.env` file is missing, empty, or contains invalid credentials, VOZI handles this gracefully. `SupabaseConfig.isConfigured` returns `false`, `SupabaseClientProvider.initialize()` returns `false` without throwing, and `SupabaseClientProvider.client` returns `null`. Every feature that depends on the backend checks for a `null` client before proceeding and falls back silently.
+
+From the user's perspective, nothing breaks. The adult account screen displays an informational message explaining that Supabase is not configured in this installation, and all child profiles, sound progress, and practice attempts continue to be stored locally on the device.
+
+## Authentication Setup
+
+VOZI uses **Supabase Email/Password** authentication for the adult account. There is no OAuth, no social login, and no child login — only the adult authenticates, and only to enable cloud sync.
+
+Depending on your Supabase project settings, email confirmation may or may not be required:
+
+- If **email confirmation is disabled** (common for development projects), `signUp` returns a session immediately and the adult is signed in.
+- If **email confirmation is enabled**, `signUp` returns no session. The app displays the message *"Account created. Check your email to confirm it, then sign in."* The adult must confirm their address before `signIn` succeeds.
+
+You can toggle email confirmation in the Supabase dashboard under **Authentication → Providers → Email → Confirm email**.

@@ -1,0 +1,187 @@
+---
+title: "Phoneme Practice: Listen, Speak, and Get Evaluated"
+sidebarTitle: "Phoneme Practice"
+description: "How VOZI's exercise screen works — word cards, Listen mode with MP3 audio, Speak mode with on-device STT, and the WordEvaluator scoring algorithm."
+---
+
+When a child taps an available or completed phoneme station on their learning path, the app pushes `ExerciseScreen` with the selected `Phoneme` as a parameter. The screen runs a session of 10 words, one at a time. For each word the child can listen to a native pronunciation, then attempt to say it into the microphone. The app evaluates the spoken word using the same rules as VOZI iOS and shows friendly feedback — no scores, no letter grades, just "¡Muy bien!" or "Casi, intenta otra vez". After 10 words, a completion dialog shows how many the child got right and whether they earned the reward for that sound.
+
+## The Exercise Screen
+
+The exercise screen is laid out as a single vertical column with five distinct zones:
+
+<CardGroup cols={2}>
+  <Card title="Progress Bar" icon="bars-progress">
+    A colored `LinearProgressIndicator` at the top showing `(index + 1) / 10`. Below it, a small label reads "Palabra N de 10". The bar color is the phoneme's identity color from `VoziTheme.phonemeColor()`.
+  </Card>
+  <Card title="Word Card" icon="image">
+    A large rounded white card (`_WordCard`) showing the word's image from `assets/words/<word>.png` and the word in 42sp bold text below it. If the image asset doesn't exist, a placeholder icon is shown without crashing.
+  </Card>
+  <Card title="Feedback Banner" icon="comment">
+    A `_FeedbackBanner` widget that displays contextual messages (see Speak Mode section). Its height is reserved at 54dp so the layout doesn't jump between states.
+  </Card>
+  <Card title="Listen / Speak Buttons" icon="microphone">
+    Two side-by-side `_BigActionButton` widgets: **Escuchar** (peach tint) and **Hablar/Detener** (phoneme color, pulsing while active). Both show an icon above a label for children who can't read.
+  </Card>
+</CardGroup>
+
+A full-width **Siguiente** / **Terminar** button at the bottom is disabled until the child has attempted the current word at least once (`_answered = true`).
+
+## Listen Mode
+
+Tapping **Escuchar** calls `_listen()`, which:
+
+<Steps>
+  <Step title="Cancel any active mic session">
+    Calls `_stt.cancel()` and `_tts.stop()` to free the microphone before playing audio.
+  </Step>
+  <Step title="Play the MP3 asset">
+    Calls `_audio.playWord(word.audioKey)` which attempts to play the file at `assets/audio/words/<word>.mp3` — the same audio files used by VOZI iOS.
+  </Step>
+  <Step title="TTS fallback">
+    If the MP3 asset does not exist (returns `false`), `_tts.speak(word.text)` is called as a fallback using the device's system text-to-speech engine in Spanish.
+  </Step>
+  <Step title="Restore UI state">
+    The `_listening` flag is set to `false` and the button label returns to "Escuchar".
+  </Step>
+</Steps>
+
+The **Hablar** button is disabled while audio is playing so the microphone is not activated simultaneously.
+
+## Speak Mode (Voice Recognition)
+
+VOZI uses a **two-click manual flow** designed to prevent false triggers and give the child clear control. The `_attempt` state machine drives the feedback banner and button label.
+
+### Attempt State Machine
+
+| State | Banner Message | Description |
+|---|---|---|
+| `none` | *(empty, reserved height)* | Initial state; no attempt started |
+| `preparing` | "Preparando micrófono…" | First tap: STT engine initializing |
+| `ready` | "Habla ahora" | Microphone is actively listening |
+| `tooFast` | "Espera un momentito, todavía estoy preparando el micrófono." | Second tap arrived before mic was ready |
+| `heard` | "Te escuché" | Transcription received; brief transition state (~700 ms) |
+| `passed` | "¡Muy bien!" | Word evaluated as correct |
+| `almost` | "Casi, intenta otra vez" | Word evaluated as incorrect |
+| `empty` | "No detecté voz, intentemos otra vez" | STT returned empty transcription |
+| `unavailable` | "Micrófono no disponible aquí" | STT engine unavailable (no permission / emulator) |
+
+### Two-Click Flow
+
+```dart
+// First tap — start
+setState(() => _attempt = _Attempt.preparing);
+await _stt.listen(
+  onReady: () => setState(() => _attempt = _Attempt.ready),
+  onResult: _evaluate,
+  targetWord: _current.text,
+);
+
+// Second tap — stop and evaluate
+await _stt.stopAndReport(); // triggers onResult callback
+```
+
+<Tip>
+  STT runs entirely on-device using the Android speech recognition engine. The recognized text is **never uploaded** anywhere. Only the text string and a pass/fail boolean are stored locally as part of the attempt history, which parents can review in the dashboard.
+</Tip>
+
+Every attempt — including empty ones and unavailable states — is saved to the local attempt history via `ProfileScope.of(context).recordAttempt(...)`.
+
+## Word Evaluation Algorithm
+
+`WordEvaluator.evaluate()` applies three rules in sequence, mirroring the logic in VOZI iOS's `PhonemeWordEvaluator`. All three must pass for a word to be marked correct.
+
+```dart
+WordResult result = WordEvaluator.evaluate(
+  phoneme: Phoneme.r,
+  target: 'rana',
+  transcription: 'la rana salta',
+);
+// result.passed → true
+// result.score  → 1.0
+```
+
+**Signature:**
+
+```dart
+static WordResult evaluate({
+  required Phoneme phoneme,
+  required String target,
+  required String transcription,
+}) → WordResult
+```
+
+**`WordResult` fields:**
+
+| Field | Type | Description |
+|---|---|---|
+| `passed` | `bool` | `true` if all three rules are satisfied |
+| `score` | `double` | Levenshtein similarity 0.0–1.0 (used as support rule) |
+
+### The Three Rules
+
+<Steps>
+  <Step title="Rule 1 — Exact token match">
+    The normalized target word must appear as a **complete token** in the normalized transcription. Partial substring matches don't count. For example, if the target is `"rana"` and the transcription is `"la rana"`, the token `"rana"` is present. If the transcription is `"arana"` (as one token), it fails.
+  </Step>
+  <Step title="Rule 2 — Phoneme sound preserved">
+    The target word must contain the phoneme's characteristic sound pattern. This is checked against the **normalized target word**, not the transcription:
+
+    | Phoneme | Condition |
+    |---|---|
+    | `R` | normalized target starts with `'r'` |
+    | `RR` | normalized target contains `'rr'` |
+    | `S` | normalized target starts with `'s'` |
+    | `L` | normalized target starts with `'l'` |
+    | `TR` | normalized target contains `'tr'` |
+    | `PR` | normalized target contains `'pr'` |
+    | `PL` | normalized target contains `'pl'` |
+    | `BR` | normalized target contains `'br'` |
+    | `BL` | normalized target contains `'bl'` |
+  </Step>
+  <Step title="Rule 3 — Levenshtein similarity ≥ 0.8">
+    `_similarity(target, transcription)` computes a 0.0–1.0 score. It checks per-word similarity against each token in the transcription and takes the maximum. If any token exactly matches the target, the score is `1.0`. A minimum of `0.8` is required as support.
+  </Step>
+</Steps>
+
+Normalization (`_normalize`) lowercases the input, strips diacritics (e.g. `á → a`, `ñ → n`), removes non-alphanumeric characters, and collapses whitespace — ensuring accented transcriptions from STT don't fail unnecessarily.
+
+## Session Completion
+
+After all 10 words are attempted, `_finish()` is called automatically by the **Terminar** button.
+
+```dart
+final correct  = _passed.where((p) => p).length;
+final rewarded = correct >= _requiredCorrect; // (10 * 0.9).ceil() = 9
+```
+
+A session is **rewarded** when the child gets **9 or more of 10 words correct**. The completion dialog (`_CompletionDialog`) shows:
+
+- 🎉 or 💪 emoji depending on outcome
+- Correct count: "Acertaste N de 10 palabras."
+- Points earned: "Ganaste 10 puntos. ⭐" (rewarded) or how many more are needed (not rewarded)
+- A single **Volver al camino** button
+
+`ProfileStore.finishPhoneme()` is always called with the `rewarded` flag:
+- **Always:** phoneme added to `practicedPhonemes` (unlocks the next station regardless of score)
+- **Only if rewarded:** phoneme added to `completedPhonemes`, 10 points added to profile
+
+If the session was rewarded, `showVoziConfetti(context)` fires a Flutter overlay of 34 animated confetti particles that runs once (~1.6 s) and auto-destroys.
+
+## Word Bank
+
+The word bank is a static `Map<String, List<String>>` in `WordBank._words`. Each phoneme has exactly 10 words, taken directly from VOZI iOS's `ContentBank.swift`.
+
+| Phoneme | Words |
+|---|---|
+| `R` | rana, rosa, ratón, ratita, rueda, rama, remo, río, ropa, radio |
+| `RR` | perro, carro, torre, burro, gorra, jarra, tierra, barro, zorro, cerro |
+| `S` | sapo, sol, silla, sopa, sal, saco, sueño, salsa, sala, sirena |
+| `L` | luna, lechuga, loro, leche, lámpara, libro, limón, llave, lobo, lata |
+| `TR` | tren, trapo, trono, trigo, trompo, tres, trozo, trucha, trenza, trofeo |
+| `PR` | proa, presa, prisa, prado, prosa, presto, prendedor, prensa, pronto, praga |
+| `PL` | plato, pluma, playa, plaza, pleno, plata, plancha, plano, plaga, plomo |
+| `BR` | brazo, brisa, brocha, brasa, bravo, brillo, broma, cebra, libro, cabra |
+| `BL` | blanco, blíster, bloque, blando, cable, tabla, pueblo, mueble, habla, establo |
+
+Each word is wrapped in a `PracticeWord` object when loaded. The image asset path is `assets/words/<word>.png` and the audio path is `assets/audio/words/<word>.mp3`.

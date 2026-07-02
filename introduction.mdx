@@ -1,0 +1,90 @@
+---
+title: "VOZI: Interactive Spanish Phoneme Learning for Kids"
+sidebarTitle: "Introduction"
+description: "VOZI is a Flutter app for children ages 4–7 that teaches Spanish phonemes via voice recognition, audio playback, image cards, and Rive-animated rewards."
+---
+
+VOZI is an educational Flutter app built for Android that helps children between the ages of 4 and 7 learn to pronounce Spanish phonemes through play. Each practice session pairs a picture card and audio playback with on-device speech recognition, so children hear a word, say it aloud, and receive instant feedback — all without an internet connection. VOZI is a learning tool, not a diagnostic instrument; it is designed to build phoneme awareness through repetition and positive reinforcement.
+
+## What VOZI Teaches
+
+VOZI covers nine Spanish phonemes and consonant clusters arranged as a sequential learning path. Children progress through each phoneme in order, practicing 10 real Spanish words per phoneme before unlocking the next stage.
+
+| Order | Phoneme | Sample Words |
+|-------|---------|--------------|
+| 1 | **R** | rana, rosa, ratón, rueda, río… |
+| 2 | **RR** | perro, carro, torre, burro, zorro… |
+| 3 | **S** | sapo, sol, silla, sopa, sirena… |
+| 4 | **L** | luna, lechuga, loro, leche, lobo… |
+| 5 | **TR** | tren, trapo, trono, trigo, trofeo… |
+| 6 | **PR** | proa, presa, prisa, prado, pronto… |
+| 7 | **PL** | plato, pluma, playa, plaza, plancha… |
+| 8 | **BR** | brazo, brisa, brocha, cebra, cabra… |
+| 9 | **BL** | blanco, bloque, blando, cable, tabla… |
+
+The phoneme path is linear: a child must complete all 10 words for **R** before **RR** becomes available, **RR** before **S**, and so on. Each phoneme's word list is the same static set used in VOZI iOS (`ContentBank.swift`), ensuring content parity across platforms. The word bank lives in `lib/data/word_bank.dart` and can be migrated to Supabase in a future phase without affecting local progress data.
+
+## How a Practice Session Works
+
+When a child selects a phoneme, each of its 10 words is presented as an image card. Two interaction modes drive the session:
+
+**Listen (Escuchar):** The app plays the correct pronunciation of the word using the device's Text-to-Speech engine (`flutter_tts`) or a pre-recorded MP3 from `assets/audio/words/`. The child can tap Listen as many times as needed before attempting to speak.
+
+**Speak (Hablar):** The app activates the on-device speech recognizer (`speech_to_text`). The microphone listens, transcribes the child's utterance locally, and compares it to the target word using a similarity score. A score of **90% or above** counts as a correct attempt. No audio recording is retained after evaluation — only the resulting pass/fail metric.
+
+When a child passes all 10 words in a phoneme, VOZI plays a session-complete audio cue from `assets/audio/feedback/session/` and displays a confetti celebration driven by an animated Rive character from `assets/rive/`. The child receives a reward that appears in their personal rewards gallery.
+
+<Note>
+  VOZI is an **educational** app, not a medical or clinical tool. It is designed to build phoneme awareness through positive reinforcement and is not a substitute for evaluation or therapy by a licensed speech-language pathologist.
+</Note>
+
+## Privacy by Design
+
+VOZI enforces a strict local-processing rule for all voice data. The speech recognizer runs entirely on-device: raw audio is never recorded to disk, never transmitted over the network, and never sent to Supabase. The only data that may be synced to the backend are structured metrics:
+
+- **Phoneme practiced** (e.g., `"RR"`)
+- **Word practiced** (e.g., `"perro"`)
+- **Similarity score** (numeric, 0–100)
+- **Pass / fail result**
+- **Timestamp and child profile ID**
+
+This means a parent or guardian can review progress data without any audio trail existing. The `supabase_config.dart` source explicitly notes: *"VOZI no sube audio a Supabase. VOZI no sube transcripciones."*
+
+## Who Manages the App
+
+VOZI is designed so that a child can use it independently after a guardian completes the initial setup. Children do not log in — they simply select their profile from the profiles screen. Adults access a separate dashboard by entering a 4-digit PIN (`1234` in the academic demo). The adult panel provides:
+
+- An overview of each child's phoneme progress and attempt history
+- A gateway to the Premium features demo
+- Access to the adult Supabase account screen for optional backend sync
+
+The PIN is a lightweight barrier intended for academic demonstration. It is defined as a compile-time constant in `AppConfig.parentPin` and is not a substitute for full authentication.
+
+## Key Features at a Glance
+
+<CardGroup cols={2}>
+  <Card title="On-Device Speech Recognition" icon="microphone">
+    Pronunciation is evaluated locally using the `speech_to_text` package. No audio ever leaves the device.
+  </Card>
+  <Card title="TTS + MP3 Audio Playback" icon="volume-high">
+    Words are voiced via `flutter_tts` and pre-recorded MP3s so children hear accurate pronunciation before speaking.
+  </Card>
+  <Card title="9-Phoneme Learning Path" icon="road">
+    Nine phonemes and clusters (R through BL), each with 10 curated practice words, unlock sequentially as children progress.
+  </Card>
+  <Card title="Rive Animated Rewards" icon="star">
+    Completing a phoneme triggers a Rive character animation and a session-complete audio cue to celebrate the child's achievement.
+  </Card>
+  <Card title="Child Profiles, No Login" icon="user">
+    Multiple child profiles are stored locally. Children tap their avatar to start — no passwords or accounts required.
+  </Card>
+  <Card title="Optional Supabase Sync" icon="database">
+    Progress metrics can sync to a Supabase backend for adult review. The app runs fully offline when no `.env` credentials are present.
+  </Card>
+  <Card title="Adult PIN Dashboard" icon="lock">
+    A 4-digit PIN gates the adult panel, keeping settings and progress data separate from the child-facing interface.
+  </Card>
+  <Card title="Image Card UI" icon="image">
+    Each practice word is paired with a PNG illustration from `assets/words/` to reinforce meaning alongside sound.
+  </Card>
+</CardGroup>

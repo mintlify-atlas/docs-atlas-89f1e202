@@ -1,0 +1,198 @@
+---
+title: "VOZI Architecture: Flutter App Structure and State Management"
+sidebarTitle: "Overview"
+description: "How VOZI is structured — the InheritedWidget scope tree, ChangeNotifier stores, named routes, and the local-first data strategy with optional Supabase sync."
+---
+
+VOZI is a Flutter Material app built around a **local-first, no-login-for-children** philosophy. All child data lives on-device in `shared_preferences` and is available instantly without a network connection. The adult can optionally sign in with Supabase to sync profiles and Premium status across devices, but the app works completely offline without any credentials. State is managed with plain `ChangeNotifier` stores injected into the widget tree via `InheritedNotifier` scopes — no external state management package required.
+
+---
+
+## App Entry Point
+
+`main.dart` performs three ordered steps before handing off to the widget tree:
+
+<Steps>
+  <Step title="Load environment variables">
+    `flutter_dotenv` reads a `.env` file at the project root containing the Supabase URL and anon key. If the file is absent (the common case for open development), the exception is silently caught and the app continues in fully local mode.
+  </Step>
+  <Step title="Initialize Supabase">
+    `SupabaseClientProvider.initialize()` is called. It reads the dotenv values and bootstraps `supabase_flutter`. If credentials are missing or initialization fails for any reason, the method returns without throwing — the rest of the app is written to tolerate a `null` Supabase client.
+  </Step>
+  <Step title="Launch the app">
+    `runApp(const VoziApp())` mounts the root widget.
+  </Step>
+</Steps>
+
+```dart
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  try {
+    await dotenv.load(fileName: '.env');
+  } catch (_) {
+    // No .env: local-first mode, no backend.
+  }
+
+  await SupabaseClientProvider.initialize();
+  runApp(const VoziApp());
+}
+```
+
+---
+
+## Scope Tree (`VoziApp`)
+
+`VoziApp` is a `StatefulWidget`. Its state object constructs the four stores once and keeps them alive for the lifetime of the app. The `MaterialApp.builder` callback wraps the Navigator's child in a nested chain of `InheritedNotifier` scopes, so every route in the app can access any store with a single `of(context)` call.
+
+```
+ProfileScope
+  └── PremiumScope
+        └── DeveloperScope
+              └── AuthScope
+                    └── Navigator (routes)
+```
+
+Each scope is an `InheritedNotifier<T>` where `T` is the corresponding `ChangeNotifier`. When the notifier calls `notifyListeners()`, any widget that read it via `dependOnInheritedWidgetOfExactType` rebuilds automatically — no `setState` or `StreamBuilder` needed.
+
+```dart
+// From _VoziAppState.build()
+builder: (context, child) => ProfileScope(
+  store: _store,
+  child: PremiumScope(
+    store: _premium,
+    child: DeveloperScope(
+      store: _developer,
+      child: AuthScope(
+        service: _auth,
+        child: child ?? const SizedBox.shrink(),
+      ),
+    ),
+  ),
+),
+```
+
+Access pattern from any widget deep in the tree:
+
+```dart
+final store   = ProfileScope.of(context);
+final premium = PremiumScope.of(context);
+final dev     = DeveloperScope.of(context);
+final auth    = AuthScope.of(context);
+```
+
+---
+
+## Stores (ChangeNotifier)
+
+<CardGroup cols={2}>
+  <Card title="ProfileStore" icon="user">
+    Holds the list of `ChildProfile` objects, the currently selected profile ID, and the full `SpeechAttempt` history. Backed by `ProfileRepository` which reads/writes JSON blobs to `shared_preferences`. Exposes `load()`, `addProfile()`, `select()`, `finishPhoneme()`, `recordAttempt()`, and sync helpers. The selected profile drives the entire child exercise flow.
+  </Card>
+  <Card title="PremiumStore" icon="star">
+    Tracks whether Premium is active (`isPremiumEnabled`) and where that state came from (`PremiumSource`). Loads from `shared_preferences` key `vozi_premium_enabled_v1`. When an adult session is active, `refreshFromAccount()` reads the Supabase `premium` table and syncs both ways. Exposes `activateDemo()` and `deactivateDemo()` which return a `PremiumWriteOutcome`.
+  </Card>
+  <Card title="DeveloperStore" icon="code">
+    A single boolean (`isEnabled`) persisted under `vozi_developer_mode_enabled_v1`. When enabled, all phoneme stations appear unlocked regardless of Premium or progress state. It does not modify actual progress, points, or Supabase data — it is a purely visual override for demos and testing.
+  </Card>
+  <Card title="AuthService" icon="lock">
+    Wraps `supabase_flutter`'s auth client as a `ChangeNotifier`. Manages adult sign-in/sign-out and exposes the current `Session`. `PremiumStore` observes its auth state stream to trigger `refreshFromAccount()` on login. Children never authenticate — the auth layer is adult-only.
+  </Card>
+</CardGroup>
+
+All stores are created in `_VoziAppState` and their `load()` / `dispose()` lifecycle is tied directly to the app widget:
+
+```dart
+@override
+void initState() {
+  super.initState();
+  _store.load();
+  _premium.load();
+  _developer.load();
+}
+
+@override
+void dispose() {
+  _store.dispose();
+  _premium.dispose();
+  _developer.dispose();
+  _auth.dispose();
+  super.dispose();
+}
+```
+
+---
+
+## Navigation (AppRouter)
+
+VOZI uses Flutter's standard imperative `Navigator` with named routes. All route strings are defined as constants on `AppRouter` and resolved in `onGenerateRoute`. The `WelcomeScreen` is set as `MaterialApp.home` (the initial route before any named navigation).
+
+| Route | Screen class | Purpose |
+|-------|-------------|---------|
+| `/profiles` | `ProfilesScreen` | List of child profiles; entry point after welcome |
+| `/create-profile` | `CreateProfileScreen` | Form to create a new child profile |
+| `/home` | `ChildHomeScreen` | Learning path map for the selected child |
+| `/parent-gate` | `ParentGateScreen` | PIN entry screen blocking adult area |
+| `/parent` | `ParentDashboardScreen` | Adult dashboard — progress, sync, settings |
+| `/rewards` | `RewardsScreen` | Child's collectible reward characters |
+| `/premium` | `PremiumScreen` | Premium upsell / demo activation |
+| `/adult-account` | `AdultAccountScreen` | Adult sign-in / account management |
+
+Unknown routes fall back to `ProfilesScreen`. All routes are wrapped with a standard `MaterialPageRoute` for the default slide transition.
+
+```dart
+// Navigate imperatively from any widget
+Navigator.pushNamed(context, AppRouter.home);
+Navigator.pushNamed(context, AppRouter.premium);
+```
+
+---
+
+## Directory Structure
+
+```
+lib/
+  app/                  # VoziApp root + InheritedNotifier scope widgets
+    vozi_app.dart
+    auth_scope.dart
+    developer_scope.dart
+    premium_scope.dart
+    profile_scope.dart
+
+  core/
+    audio/              # SttService, TtsService, AudioAssetService
+    config/             # AppConfig (app name), SupabaseConfig
+    evaluation/         # WordEvaluator (phoneme correctness logic)
+    router/             # AppRouter (named routes)
+    theme/              # VoziTheme (colors, tokens), VoziWidgets, VoziConfetti
+
+  data/
+    local/              # ProfileRepository (shared_preferences)
+    models/             # ChildProfile, Phoneme, PracticeWord, Reward, SpeechAttempt
+    remote/             # SupabaseClientProvider, SyncService, SyncDtos
+    word_bank.dart      # Static word lists per phoneme
+
+  features/
+    auth/               # AuthService, AdultAccountScreen
+    developer/          # DeveloperStore
+    exercise/           # ExerciseScreen (Listen + Speak flow)
+    home/               # WelcomeScreen, ChildHomeScreen (learning path)
+    parent/             # ParentGateScreen, ParentDashboardScreen
+    premium/            # PremiumStore, PremiumScreen
+    profiles/           # ProfileStore, ProfilesScreen, CreateProfileScreen
+    rewards/            # RewardsScreen
+```
+
+---
+
+## Key Dependencies
+
+| Package | Version | Purpose |
+|---------|---------|---------|
+| `supabase_flutter` | ^2.15.0 | Adult auth and optional cloud sync |
+| `shared_preferences` | ^2.3.2 | Local persistence for profiles and settings |
+| `flutter_tts` | ^4.2.0 | Text-to-speech word playback (Spanish, fallback) |
+| `speech_to_text` | ^7.0.0 | On-device speech recognition for exercises |
+| `audioplayers` | ^6.1.0 | MP3 playback for word recordings and feedback sounds |
+| `rive` | ^0.13.20 | Animated `.riv` reward characters |
+| `flutter_dotenv` | ^6.0.1 | `.env` file loading for Supabase credentials |

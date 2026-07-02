@@ -1,0 +1,164 @@
+---
+title: "Parent Dashboard: Monitor Progress and Manage Settings"
+sidebarTitle: "Parent Dashboard"
+description: "The VOZI adult panel gives parents and educators a PIN-protected view of child progress, attempt history, Premium management, and Supabase sync."
+---
+
+The parent dashboard (`ParentDashboardScreen`) is the adult-facing control center in VOZI. It gives parents and educators a read-only view of a child's phoneme progress, a detailed attempt history showing what the STT engine recognized, and controls for Premium, Developer Mode, and account sync. Because the dashboard surfaces data meant for adults — including session accuracy and raw STT transcriptions — it is protected by a PIN gate that children must pass through before the panel opens.
+
+## Accessing the Dashboard
+
+`ParentGateScreen` is a simple 4-digit PIN prompt that acts as a child-deterrent barrier. It is not intended as strong security — its purpose is to prevent accidental entry by a child tapping the menu.
+
+<Steps>
+  <Step title="Tap the overflow menu on the child home screen">
+    On `ChildHomeScreen`, tap the ⋮ overflow menu in the app bar and select **Panel adulto**. This pushes `ParentGateScreen` (`/parent-gate`).
+  </Step>
+  <Step title="Enter the PIN">
+    A 4-digit numeric PIN field is shown. The PIN is defined in `AppConfig.parentPin`.
+  </Step>
+  <Step title="Dashboard opens">
+    If the PIN matches, `ParentGateScreen` calls `Navigator.pushReplacementNamed(AppRouter.parent)`, replacing itself with `ParentDashboardScreen` so the back button returns to the child home screen rather than the PIN screen.
+  </Step>
+  <Step title="Wrong PIN">
+    The field clears and a "PIN incorrecto" error message appears in coral. The adult can try again immediately.
+  </Step>
+</Steps>
+
+<Warning>
+  The demo PIN is **1234**, hardcoded in `AppConfig.parentPin`. This is not real access control. Production deployments should replace this with a proper authentication mechanism. Never use `1234` in a release build distributed to real users.
+</Warning>
+
+## Progress Overview
+
+The top of the dashboard shows a summary card for the currently selected child (name, avatar, age band) followed by three stat tiles and an overall progress bar:
+
+<CardGroup cols={3}>
+  <Card title="Points" icon="star">
+    Total points earned. 10 points awarded per completed phoneme (one-time).
+  </Card>
+  <Card title="Practicados" icon="microphone">
+    Count of phonemes attempted at least once (any score). Used to unlock subsequent stations on the path.
+  </Card>
+  <Card title="Completados" icon="trophy">
+    Count of phonemes completed at ≥90% accuracy. Earns the reward character and ✓ station badge.
+  </Card>
+</CardGroup>
+
+Below the stat tiles, the **Avance general** card shows a green `LinearProgressIndicator` displaying `completed / 9` and a percentage label (e.g., "33%"). The subtitle reads "N de 9 sonidos completados".
+
+## Phoneme Status Table
+
+The "Camino de sonidos" section lists all 9 phonemes in path order, each with a colored badge and a status chip. The dashboard computes each phoneme's state via `_stateFor(child, phoneme)`:
+
+| Status | Chip Color | Meaning |
+|---|---|---|
+| **Bloqueado** | Grey (`VoziTheme.neutral`) | Previous phoneme has not been practiced yet |
+| **Disponible** | Peach (`VoziTheme.peach`) | Accessible; previous phoneme has been practiced |
+| **Practicado** | Sky blue (`VoziTheme.sky`) | Child has attempted this phoneme at least once |
+| **Completado** | Green (`VoziTheme.success`) | Child completed this phoneme with ≥90% accuracy |
+
+The phoneme's identity color (from `VoziTheme.phonemeColor()`) is used for the circular badge icon when the state is not locked. A lock icon replaces the phoneme code when the state is `locked`.
+
+A legend card below the table reminds adults of the distinction:
+- 🎙️ **Practicado** — the child has already tried this sound
+- ⭐ **Completado** — they exceeded the 90% accuracy goal
+
+## Per-Phoneme Summary
+
+Below the path table, the "Resumen por sonidos" section shows per-phoneme aggregated statistics for all attempts recorded for this child. Rows are sorted by path order. Each row displays:
+
+- Colored phoneme badge circle
+- **N/M aciertos** — correct count over total attempts
+- **Última práctica** — formatted date/time of the most recent attempt for this phoneme
+- An accuracy percentage chip in the phoneme's identity color (e.g., "70%")
+
+If no attempts have been recorded yet, an empty hint reads: "Aún no hay intentos. Cuando el niño practique con 'Hablar', aquí verás aciertos y porcentaje por sonido."
+
+## Attempt History
+
+The "Historial reciente" section shows the **last 15 attempts** for the selected child, ordered most-recent-first. Each row contains:
+
+- A ✓ (green) or 🔄 (orange) icon indicating pass or fail
+- **Phoneme code · target word** — e.g., "R · rana"
+- What the app understood — displayed as `La app entendió: «<recognized text>»`, or `Sin texto reconocido (la app no detectó voz)` if the STT returned nothing
+- A timestamp (date and time, formatted by `formatDateTime`)
+
+A privacy note is shown below the history list: "Solo se guarda el texto reconocido y el resultado. Nunca se graba ni se guarda el audio del niño."
+
+<Note>
+  No audio is ever stored or transmitted. The attempt history contains only the STT-recognized text string, a boolean pass/fail, a similarity score (0–1), the target word, and the phoneme code. Voice recordings are processed on-device and immediately discarded.
+</Note>
+
+## Account and Sync
+
+The "Cuenta del adulto" section shows an `_AccountCard` linking to `AdultAccountScreen` (`/adult-account`). The card adapts based on sign-in state:
+
+<CardGroup cols={2}>
+  <Card title="Not signed in" icon="circle-user">
+    Shows "Sin cuenta vinculada" with a note that data remains saved locally on the device. Tapping opens the account/login screen.
+  </Card>
+  <Card title="Signed in" icon="user-check">
+    Shows the account email and "Cuenta vinculada. La sincronización llegará en la siguiente fase." Tapping opens the account screen for sign-out or management.
+  </Card>
+</CardGroup>
+
+Authentication uses Supabase. The `ProfileStore` is local-first: the device is always the source of truth. Cloud sync propagates `isDirty` profiles and attempt records when the adult is signed in.
+
+## Premium Management
+
+The "Premium" card in the parent dashboard shows the current Premium status and links to `PremiumScreen` (`/premium`). Premium is a parent/educator decision — it does not appear anywhere in the child's view.
+
+| State | Card Appearance | Action |
+|---|---|---|
+| Not Premium | Gold crown icon, "S/ 14.90 mensual" label | Tapping opens the Premium screen |
+| Premium active | Green verified icon, "Premium activo" label | Tapping opens the Premium screen for management |
+
+<Note>
+  The S/ 14.90 mensual pricing shown in the current build is for demo purposes only. No real payment processing is connected in the demo build.
+</Note>
+
+When Premium is enabled, all 9 phonemes become available on the child's learning path. Without Premium, only the **R** phoneme is accessible; the other 8 show a `premiumLocked` state on the path with a message prompting children to ask an adult.
+
+## Developer Mode
+
+The "Modo desarrollador" section contains a toggle switch (`_DeveloperCard`) that enables a demo mode for testing or demonstrating the app:
+
+```dart
+Switch(
+  value: developer.isEnabled,
+  onChanged: (v) => developer.setEnabled(v),
+)
+```
+
+When **enabled**, Developer Mode:
+- Shows all phoneme stations as available (regardless of progression or Premium)
+- Shows all reward characters as unlocked in the rewards gallery
+
+When **disabled**, normal progression and Premium rules apply.
+
+<Note>
+  Developer Mode does **not** modify `completedPhonemes`, `practicedPhonemes`, or `points`. It is a pure display override. Real progress is unaffected — toggling it off immediately restores the child's actual progress state.
+</Note>
+
+## Reset Progress
+
+At the bottom of the dashboard, a coral-outlined **Reiniciar progreso** button triggers a confirmation dialog before wiping all progress for the selected child:
+
+```
+"Se pondrán los puntos en 0, se bloquearán de nuevo los sonidos y se borrará
+el historial de intentos. El perfil no se elimina."
+```
+
+Confirming calls `ProfileStore.resetProgress(childId)`, which:
+- Sets `points` to `0`
+- Clears `completedPhonemes`
+- Clears `practicedPhonemes`
+- Removes all attempt history records for this child from local storage
+- Marks the profile `isDirty = true` for Supabase sync
+
+<Warning>
+  Progress reset is permanent and cannot be undone. The child's profile (name, avatar, age band) is preserved, but all phoneme progress, points, and attempt history are erased immediately.
+</Warning>
+
+A **Volver al Home** button below the reset button navigates back to the child home screen without making any changes.
